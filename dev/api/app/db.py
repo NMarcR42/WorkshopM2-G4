@@ -49,6 +49,9 @@ pool = ConnectionPool(
     timeout=settings.db_pool_timeout_s,
     open=False,
     kwargs={"row_factory": dict_row},
+    # Teste la connexion avant de la prêter : après un redémarrage de la base, le pool tient des connexions
+    # mortes ; sans ce test, la 1re requête qui suit échoue en 503 (et fausserait la vérification de reprise).
+    check=ConnectionPool.check_connection,
 )
 _schema_ready = False
 _lock = threading.Lock()

@@ -18,6 +18,7 @@ API métier FastAPI : virements fictifs entre comptes fictifs, PostgreSQL, JWT. 
 | POST | `/v1/transactions` | client, canary, operator | Crée un virement (`Idempotency-Key` optionnel). Un `client` ne débite que ses comptes. |
 | GET | `/v1/transactions/{id}` | idem | Lecture (un `client` ne voit que les siennes) |
 | GET | `/v1/transactions?limit=` | idem | Liste récente |
+| GET | `/v1/accounts` | idem | Liste des comptes : ceux du client connecté (`owner = sub`), tous pour `operator` / `canary` |
 | GET | `/v1/accounts/{id}` | idem | Solde (un `client` ne voit que les siens) |
 | GET | `/v1/ledger/check` | canary, operator | Cohérence comptable |
 | GET | `/health` `/ready` `/metrics` | public | Sondes et métriques Prometheus |

@@ -83,6 +83,16 @@ def list_transactions(
         ).fetchall()
 
 
+@router.get("/accounts", response_model=list[AccountOut])
+def list_accounts(user: User = Depends(require_role("client", "canary", "operator"))):
+    """Comptes visibles : ceux du client connecté, tous pour les autres rôles. Sert à l'écran « mes comptes » du front."""
+    where, params = ("WHERE owner = %s", (user.sub,)) if user.role == "client" else ("", ())
+    with db.transaction() as conn:
+        return conn.execute(
+            f"SELECT id, owner, balance, currency FROM accounts {where} ORDER BY id", params
+        ).fetchall()
+
+
 @router.get("/accounts/{account_id}", response_model=AccountOut)
 def get_account(account_id: str, user: User = Depends(require_role("client", "canary", "operator"))):
     with db.transaction() as conn:

@@ -149,6 +149,18 @@ ansible-playbook -i infra/ansible/inventory/${INVENTORY}.yml \
 | `ctrl` | remediation, detector, canary, docker-proxy | contrôle ; **jamais exposé** |
 | `ai` | ollama, assistant | assistant isolé, sans accès système |
 
+## Routage de l'entrée (WAF)
+
+Le navigateur est hors Docker : il ne connaît que le WAF (`:8080`) et appelle tout sur **la même origine** (pas de CORS, pas de nom de conteneur côté client). Le WAF route et **retire le préfixe** :
+
+| Chemin reçu | Destination | Variable du WAF |
+|---|---|---|
+| `/api/…` | `api` (`/api/v1/accounts` → `/v1/accounts`) | `BACKEND` (= `API_URL`) |
+| `/auth/…` | `auth` (`/auth/login` → `/login`) | `AUTH_URL` |
+| tout le reste | `frontend` | `FRONTEND_URL` |
+
+Le WAF pose `X-Forwarded-For` (IP réelle du client, lue par l'API et `auth`). Le front n'appelle jamais `remediation`, `detector` ni `assistant`. En dev sans WAF, le serveur Vite (`npm run dev`) applique ce même routage.
+
 ## Sécurité : pourquoi le cloisonnement
 
 - **Rayon d'explosion** : si le WAF/front est compromis, il n'atteint ni la base ni les secrets du back ; si le back tombe, la supervision et la reprise (`ops`) survivent et peuvent agir.

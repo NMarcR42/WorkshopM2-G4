@@ -14,8 +14,12 @@ services:
     networks: [edge, app]
     ports:
       - "${PUBLIC_BIND:-0.0.0.0}:${WAF_PORT:-8080}:8080"   # SEUL port ouvert au reseau pedagogique
+    # Routage attendu du WAF (voir doc/ARCHITECTURE.md, "Routage de l'entrée") :
+    #   /api/ -> API, /auth/ -> auth (préfixe retiré), tout le reste -> frontend
     environment:
       BACKEND: ${API_URL:-http://api:8000}   # multi-machines : http://<ip-machine-back>:8000
+      AUTH_URL: ${AUTH_URL:-http://auth:8000}   # multi-machines : http://<ip-machine-back>:8001
+      FRONTEND_URL: ${FRONTEND_URL:-http://frontend:80}
     volumes:
       - ./cyber/waf:/etc/waf/conf:ro
       # defaut = volume nomme (mono-hote). Multi-machines : WAF_BLOCKLIST_SRC=/opt/resilience/waf-blocklist (chemin hote,
@@ -24,6 +28,11 @@ services:
     restart: unless-stopped
 
   frontend:
-    build: ./dev/frontend
+    build:
+      context: ./dev/frontend
+      args:
+        # Préfixes des appels du navigateur : par défaut même origine que la page (via le WAF).
+        VITE_API_BASE: ${VITE_API_BASE:-/api}
+        VITE_AUTH_BASE: ${VITE_AUTH_BASE:-/auth}
     networks: [app]
     restart: unless-stopped

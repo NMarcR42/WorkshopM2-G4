@@ -1,0 +1,14 @@
+{
+  "alice": {
+    "role": "client",
+    "password_hash": "pbkdf2_sha256$100000$6d1bdeb281e506744c04583c7a7b14eb$f123a09ed8fabc64f76aac72f5d0c62daf00173deaa731445992bb2b2f51bd38"
+  },
+  "bob": {
+    "role": "client",
+    "password_hash": "pbkdf2_sha256$100000$9e854798116179e9ebc2de875d580cd5$040853e875f79b62b27493191b41dcb1ad89a952b41507785eae1304955ad3cb"
+  },
+  "ops": {
+    "role": "operator",
+    "password_hash": "pbkdf2_sha256$100000$ac39c8cd317a6ca5afbd07082d4a6f62$f71182ce0a9b787fa1bd34e2d15bccdce63cf37d3eab25ac9768e8b8aeea432a"
+  }
+}

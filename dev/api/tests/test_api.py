@@ -84,6 +84,19 @@ def test_client_ne_peut_pas_debiter_le_compte_dun_autre(client):
 
 
 @needs_db
+def test_liste_des_comptes_limitee_au_proprietaire(client):
+    mine = client.get("/v1/accounts", headers=token("alice", "client"))
+    assert mine.status_code == 200
+    assert [a["id"] for a in mine.json()] == ["ACC-ALICE"]
+    everyone = client.get("/v1/accounts", headers=token("ops", "operator")).json()
+    assert {"ACC-ALICE", "ACC-BOB"} <= {a["id"] for a in everyone}
+
+
+def test_liste_des_comptes_sans_jeton_401(client):
+    assert client.get("/v1/accounts").status_code == 401
+
+
+@needs_db
 def test_compte_inconnu_404(client):
     r = client.post("/v1/transactions", json={**TX, "to_account": "ACC-NOPE"}, headers=token("canary", "canary"))
     assert r.status_code == 404
