@@ -1,0 +1,3 @@
+# Les scripts shell gardent TOUJOURS des fins de ligne Unix (LF),
+# sinon ils cassent sous WSL/Linux avec l'erreur "bash\r".
+*.sh text eol=lf

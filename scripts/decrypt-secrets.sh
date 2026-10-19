@@ -8,7 +8,7 @@ SRC=cyber/secrets/secrets.enc.yaml
 [ -f "$SRC" ] || { echo "Manquant : $SRC (voir cyber/README.md)"; exit 1; }
 
 . scripts/_env.sh
-keys=(db_password jwt_secret engine_token grafana_admin_password)
+keys=(db_password jwt_secret engine_token grafana_admin_password canary_password)
 [ "${REMEDIATION_MODE:-local}" = "ssh" ] && keys+=(ansible_ssh_key)   # cle SSH : mode ssh uniquement
 
 umask 077

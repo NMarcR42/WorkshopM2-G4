@@ -18,7 +18,7 @@ Prérequis : Docker + Compose v2, Git, un shell bash (Git Bash sous Windows).
 
 `compose.sh` est `docker compose` avec les bons fichiers, choisis par `ROLES` et `REMEDIATION_MODE` dans `.env`. Si le port 8000 est pris : `API_PORT=18000` dans `.env`.
 
-> Seuls `db`, `api`, `auth` et `frontend` existent pour l'instant (voir la roadmap) : `up --build` échoue sur les autres, qui n'ont pas encore de code. En attendant : `./scripts/compose.sh up -d --build db api auth frontend`, puis [tester le parcours de paiement](doc/AUTH-FRONTEND.md#comment-tester).
+> Seuls `db`, `api`, `auth`, `frontend` et `canary` existent pour l'instant (voir la roadmap) : `up --build` échoue sur les autres, qui n'ont pas encore de code. En attendant : `./scripts/compose.sh up -d --build db api auth frontend`, puis [tester le parcours de paiement](doc/AUTH-FRONTEND.md#comment-tester).
 
 Multi-machines, secrets partagés (SOPS), mode de remédiation `ssh` : voir [`doc/ARCHITECTURE.md`](doc/ARCHITECTURE.md) et [`cyber/README.md`](cyber/README.md).
 
@@ -36,7 +36,7 @@ Base de données, remédiation et secrets ne sont jamais publiés.
 
 | Dossier | Domaine | Contenu |
 |---|---|---|
-| [`dev/`](dev/README.md) | DEV | `api`, `auth`, `frontend` (faits) ; `canary`, `remediation` (à faire) |
+| [`dev/`](dev/README.md) | DEV | `api`, `auth`, `frontend`, `canary` (faits) ; `remediation` (à faire) |
 | [`ia/`](ia/README.md) | IA | `detector` (ML), `assistant` (RAG) |
 | [`cyber/`](cyber/README.md) | CYBER | `waf`, `attack`, secrets |
 | [`infra/`](infra/README.md) | INFRA | `compose/`, `ansible/`, `monitoring/` |

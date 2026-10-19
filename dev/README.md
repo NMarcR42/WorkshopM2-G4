@@ -15,7 +15,7 @@ Services métier et moteur de reprise : `api`, `auth`, `canary`, `remediation`, 
 
 ## auth
 
-Émet les JWT lus par `api` (`POST /login` → `{access_token, expires_in, username, role}`). Pas de base d'utilisateurs : comptes de démo dans `auth/app/users.json` (hash PBKDF2, `tools/hash_password.py` pour en créer). Mots de passe **fictifs**, en clair ici : `alice / alice-demo`, `bob / bob-demo` (clients), `ops / ops-demo` (operator). Le compte `canary` n'existe que si `CANARY_PASSWORD_FILE` est fourni (secret réel, à câbler avec la sonde). Les échecs de login sont journalisés (`event: login_failed`) pour le SIEM.
+Émet les JWT lus par `api` (`POST /login` → `{access_token, expires_in, username, role}`). Pas de base d'utilisateurs : comptes de démo dans `auth/app/users.json` (hash PBKDF2, `tools/hash_password.py` pour en créer). Mots de passe **fictifs**, en clair ici : `alice / alice-demo`, `bob / bob-demo` (clients), `ops / ops-demo` (operator). Le compte `canary` n'existe que si `CANARY_PASSWORD_FILE` est fourni (secret `canary_password`). Les échecs de login sont journalisés (`event: login_failed`) pour le SIEM.
 
 ## frontend
 
@@ -25,6 +25,21 @@ Application React + Tailwind (Vite) **sobre** : login → comptes → paiement �
 - Délai de 8 s par requête, échec affiché clairement, `Idempotency-Key` conservée tant que la réponse est incertaine : on peut réessayer sans payer deux fois.
 - Ne parle ni à `remediation`, ni au `detector`, ni à l'`assistant`.
 - Pas de `/metrics` : l'observabilité métier est côté API.
+
+## canary
+
+La sonde qui **prouve la reprise** : un conteneur qui redémarre ne prouve rien, un paiement qui passe si. Toutes les `CANARY_INTERVAL_S` (5 s) elle joue un client complet **via le WAF** (`WAF_URL`) : login → virement de 0.01 EUR entre `ACC-CANARY-A` et `ACC-CANARY-B` (avec `Idempotency-Key`) → `GET /v1/ledger/check`. Succès = tout est OK.
+
+| Route | Rôle |
+|---|---|
+| `GET /metrics` | `payment_probe_success` (1 sain / 0 échec), `payment_probe_duration_seconds`, `payment_probe_last_run_timestamp_seconds`, `payment_probe_runs_total{result,step}` |
+| `POST /verify` | Joue une passe maintenant. Toujours HTTP 200 : `{ok, failed_step, detail, duration_s, steps[]}` ; `ok: false` = le paiement ne passe pas |
+| `GET /health` | Le process répond |
+
+- Compte `canary` créé par `auth` grâce au secret `canary_password` (même fichier lu des deux côtés, jamais en clair dans git).
+- Réseaux `edge` + `ctrl` + `obs`, aucun port publié ; ne parle ni au détecteur ni à l'assistant.
+- Aucune relance en cas d'échec : une sonde qui réessaie masquerait les pannes intermittentes.
+- Réglages : `CANARY_TIMEOUT_S`, `CANARY_FROM_ACCOUNT`, `CANARY_TO_ACCOUNT`, `CANARY_AMOUNT`, `CANARY_USERNAME`.
 
 ## Tester le parcours de paiement
 

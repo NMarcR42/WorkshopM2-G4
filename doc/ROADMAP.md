@@ -42,7 +42,7 @@ Un responsable par domaine, à renseigner lundi (une personne peut en porter plu
 
 ### Mardi — production (chaque brique tourne en mono-hôte)
 
-- DEV : `auth` ✅ (émet les JWT) · `frontend` paiement ✅ (la vue supervision reste à faire) · `canary` (probe + `/verify` avec `ledger/check`) · `remediation` (interface (a), executor `local`, actions `block_source` et `restart_service`, journal d'incident)
+- DEV : `auth` ✅ (émet les JWT) · `frontend` paiement ✅ (la vue supervision reste à faire) · `canary` ✅ (probe + `/verify` avec `ledger/check` ; reste à tester derrière le vrai WAF) · `remediation` (interface (a), executor `local`, actions `block_source` et `restart_service`, journal d'incident)
 - INFRA : Prometheus + Loki + Grafana provisionnés (dashboard « avant / pendant / après ») · `scripts/reset-demo.sh` · Dockerfiles intégrés au compose
 - IA : générateur de trafic normal → jeu de données → Isolation Forest v1 → modèle figé · client qui envoie le signal (a)
 - CYBER : WAF (CRS, `X-Forwarded-For`, liste de blocage rechargeable) · script de flood depuis le PC attaquant · règles SIEM (403 WAF, échecs de login)

@@ -20,6 +20,8 @@ secrets:
     file: ./.secrets/engine_token
   grafana_admin_password:
     file: ./.secrets/grafana_admin_password
+  canary_password:
+    file: ./.secrets/canary_password
 
 services:
   remediation:
@@ -36,11 +38,13 @@ services:
     restart: unless-stopped
 
   canary:
-    build: ./dev/canary                 # transaction fictive via le WAF + POST /verify
-    networks: [edge, ctrl, obs]
+    build: ./dev/canary                 # transaction fictive via le WAF + POST /verify (aucun port publie)
+    networks: [edge, ctrl, obs]         # edge : atteint le WAF comme un client ; ctrl : appele par remediation
     environment:
-      TARGET_URL: ${WAF_URL:-http://waf:8080}   # multi-machines : http://<ip-machine-front>:8080
-      PROBE_INTERVAL_S: "5"
+      WAF_URL: ${WAF_URL:-http://waf:8080}   # multi-machines : http://<ip-machine-front>:8080
+      CANARY_INTERVAL_S: "5"
+      CANARY_PASSWORD_FILE: /run/secrets/canary_password
+    secrets: [canary_password]
     restart: unless-stopped
 
   detector:

@@ -103,7 +103,7 @@ Côté logs : `./scripts/compose.sh logs auth` montre `login_ok` / `login_failed
 |---|---|---|
 | **WAF** | CYBER | Router `/api/` → API et `/auth/` → auth **en retirant le préfixe**, le reste → frontend, et poser `X-Forwarded-For`. Sans lui, le parcours ne marche qu'avec le proxy de dev. Variables déjà prévues : `BACKEND`, `AUTH_URL`, `FRONTEND_URL`. |
 | **Test dans un vrai navigateur** | DEV | Le parcours a été validé par requêtes HTTP et le site se compile, mais l'interface n'a pas été cliquée dans un navigateur : à faire une fois. |
-| **Secret `canary_password`** | DEV / CYBER | Quand la sonde sera écrite : l'ajouter aux secrets (`init-local.sh`, `decrypt-secrets.sh`) et décommenter `CANARY_PASSWORD_FILE` dans `back.yml`. |
+| **Secret `canary_password`** | CYBER | Fait côté code (voir `dev/README.md#canary`). Reste à ajouter la clé `canary_password` dans `cyber/secrets/secrets.enc.yaml` (SOPS). |
 | **Vue de supervision** | DEV | Le tableau de bord React du jury (état du service, incidents, avancement de la reprise) n'est pas commencé. C'est là que l'effort visuel doit aller. |
 | **Compte `ops`** | CYBER | Décider si le mot de passe de démo de `ops` reste public ou passe en secret avant la démo. |
 | **Rate limiting du login** | CYBER | À faire dans le WAF : `/login` coûte du CPU (hash) et est une cible naturelle du flood. |

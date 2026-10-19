@@ -12,6 +12,8 @@ secrets:
     file: ./.secrets/db_password
   jwt_secret:
     file: ./.secrets/jwt_secret
+  canary_password:                       # meme valeur que cote canary (ops) : auth en derive le hash du compte "canary"
+    file: ./.secrets/canary_password
 
 services:
   db:
@@ -57,7 +59,6 @@ services:
       - "${BACK_BIND:-127.0.0.1}:${AUTH_PORT:-8001}:8000"
     environment:
       JWT_SECRET_FILE: /run/secrets/jwt_secret
-      # Compte "canary" : à activer quand la sonde existera (secret canary_password), jamais en clair.
-      # CANARY_PASSWORD_FILE: /run/secrets/canary_password
-    secrets: [jwt_secret]   # pas de base de donnees : auth n'a besoin que du secret de signature
+      CANARY_PASSWORD_FILE: /run/secrets/canary_password   # cree le compte "canary" de la sonde
+    secrets: [jwt_secret, canary_password]   # pas de base de donnees : auth n'a besoin que des secrets de signature et du canary
     restart: unless-stopped
