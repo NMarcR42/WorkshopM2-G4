@@ -31,6 +31,8 @@ services:
       CANARY_URL: ${CANARY_URL:-http://canary:8000}
       ENGINE_TOKEN_FILE: /run/secrets/engine_token
       REMEDIATION_MODE: ${REMEDIATION_MODE:-local}
+      # Jamais bloquer les reseaux Docker (le canary y est) ni la boucle locale : on couperait notre propre preuve de reprise.
+      PROTECTED_CIDRS: ${PROTECTED_CIDRS:-127.0.0.0/8,172.16.0.0/12}
     secrets: [engine_token]
     volumes:
       - incidents:/var/lib/resilience/incidents
@@ -45,6 +47,19 @@ services:
       CANARY_INTERVAL_S: "5"
       CANARY_PASSWORD_FILE: /run/secrets/canary_password
     secrets: [canary_password]
+    restart: unless-stopped
+
+  supervision:
+    build: ./dev/supervision            # vue du jury : etat du paiement, incidents, courbes (lecture seule)
+    networks: [ctrl, obs]               # ctrl : canary et remediation ; obs : Prometheus. Pas sur edge.
+    ports:
+      - "${ADMIN_BIND:-127.0.0.1}:${SUPERVISION_PORT:-8090}:8000"   # local comme Grafana : jamais derriere le WAF public
+    environment:
+      CANARY_URL: ${CANARY_URL:-http://canary:8000}
+      ENGINE_URL: http://remediation:8000
+      PROMETHEUS_URL: http://prometheus:9090
+      ENGINE_TOKEN_FILE: /run/secrets/engine_token   # lecture des incidents ; le token ne quitte jamais le serveur
+    secrets: [engine_token]
     restart: unless-stopped
 
   detector:

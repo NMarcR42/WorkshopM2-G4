@@ -1,0 +1,187 @@
+"""Cerveau de la remédiation : choisit les actions dans une liste fermée et ne conclut qu'avec la preuve du canary.
+
+Principe : une action qui « réussit » ne prouve rien (le code retour dit que la commande est passée, pas que le
+service marche). Seul POST /verify du canary — un vrai paiement via le WAF — clôt l'incident.
+"""
+import ipaddress
+import json
+import logging
+import threading
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import httpx
+
+from . import observability as obs
+from .config import Settings
+from .executors import ActionError, run_and_record
+from .journal import Journal
+from .schemas import Signal
+
+
+class Engine:
+    def __init__(self, s: Settings, journal: Journal, executor):
+        self.s = s
+        self.journal = journal
+        self.executor = executor
+        self.lock = threading.Lock()
+        # IP bloquées -> date d'expiration. Persisté : un redémarrage du moteur ne doit pas débloquer l'attaquant.
+        self._blocks_path = Path(s.incidents_dir) / "blocks.json"
+        self.blocks: dict[str, float] = self._load_blocks()
+
+    # ---------- entrée (interface a) ----------
+
+    def submit(self, signal: Signal) -> tuple[dict, bool]:
+        """Renvoie (incident, nouveau?). Dédoublonne : le détecteur continue de signaler pendant la réparation."""
+        with self.lock:
+            same = self.journal.by_anomaly(signal.anomaly_id)
+            if same:
+                return same, False
+            active = self.journal.active()
+            if active:
+                return active, False
+            last = next(iter(self.journal.recent(1)), None)
+            if last and last["status"] == "RESOLVED" and self._age_s(last["ended_at"]) < self.s.cooldown_s:
+                return last, False
+            inc = self.journal.create(signal.model_dump(mode="json"))
+            obs.ACTIVE.inc()
+        obs.event("incident_opened", incident_id=inc["id"], target=signal.target_service, score=signal.score)
+        threading.Thread(target=self._handle, args=(inc, signal), daemon=True).start()
+        return inc, True
+
+    # ---------- traitement ----------
+
+    def _handle(self, inc: dict, signal: Signal) -> None:
+        started = time.monotonic()
+        status, by = "UNRESOLVED", None
+        try:
+            status, by = self._remediate(inc, signal)
+        except Exception as exc:  # un bug du moteur ne doit jamais laisser un incident « en cours » à vie
+            self.journal.add(inc, "engine_error", detail=type(exc).__name__)
+            obs.event("engine_error", logging.ERROR, incident_id=inc["id"], error=repr(exc))
+        finally:
+            self.journal.finish(inc, status, by)
+            obs.ACTIVE.dec()
+            obs.INCIDENTS.labels(status).inc()
+            if status == "RESOLVED":
+                obs.RECOVERY.observe(time.monotonic() - started)
+            obs.event("incident_closed", incident_id=inc["id"], status=status, resolved_by=by,
+                      duration_s=round(time.monotonic() - started, 1))
+
+    def _remediate(self, inc: dict, signal: Signal) -> tuple[str, str | None]:
+        ips = self._blockable_ips(signal)
+
+        # Garde anti faux positif : service sain et personne à bloquer -> on ne touche à rien.
+        if not ips:
+            ok, _ = self._verify(inc)
+            if ok:
+                return "RESOLVED", "none"
+
+        # Escalade : du moins au plus intrusif. On s'arrête dès que le canary prouve la reprise.
+        plan = []
+        if ips:
+            plan.append(("block_source", {"block_ips": self._add_blocks(ips), "block_ttl_s": self.s.block_ttl_s}))
+        plan.append(("restart_service", {"target_service": signal.target_service}))
+        plan.append(("rollback_service", {"target_service": signal.target_service}))
+
+        for action, params in plan:
+            self.journal.add(inc, "action_started", action=action, params=params)
+            try:
+                run_and_record(self.executor, self.journal, inc["id"], action, params)
+                obs.ACTIONS.labels(action, "ok").inc()
+            except ActionError as exc:
+                obs.ACTIONS.labels(action, "error").inc()
+                self.journal.add(inc, "action_failed", action=action, error=str(exc))
+                obs.event("action_failed", logging.WARNING, incident_id=inc["id"], action=action, error=str(exc))
+                continue  # une action en échec ne bloque pas l'escalade
+            obs.event("action_done", incident_id=inc["id"], action=action)
+            if self._wait_recovery(inc):
+                return "RESOLVED", action
+
+        # Plus rien à tenter automatiquement : on le dit clairement plutôt que de boucler.
+        self.journal.add(inc, "escalated", detail="liste d'actions épuisée, intervention humaine requise")
+        return "UNRESOLVED", None
+
+    # ---------- vérification (preuve de reprise) ----------
+
+    def _verify(self, inc: dict) -> tuple[bool, dict]:
+        try:
+            r = httpx.post(f"{self.s.canary_url}/verify", timeout=self.s.verify_timeout_s)
+            result = r.json() if r.status_code == 200 else {"ok": False, "detail": f"canary HTTP {r.status_code}"}
+        except (httpx.HTTPError, ValueError) as exc:
+            result = {"ok": False, "detail": f"canary injoignable ({type(exc).__name__})"}
+        # Sans sonde, aucune preuve : « ne sait pas » compte comme un échec.
+        ok = result.get("ok") is True
+        self.journal.add(inc, "verify", ok=ok, failed_step=result.get("failed_step"), detail=result.get("detail"))
+        return ok, result
+
+    def _wait_recovery(self, inc: dict) -> bool:
+        deadline = time.monotonic() + self.s.verify_timeout_s
+        while True:
+            ok, _ = self._verify(inc)
+            if ok:
+                return True
+            if time.monotonic() + self.s.verify_interval_s >= deadline:
+                return False
+            time.sleep(self.s.verify_interval_s)
+
+    # ---------- liste de blocage ----------
+
+    def _blockable_ips(self, signal: Signal) -> list[str]:
+        """IP à bloquer : assez de trafic, valide, hors réseaux protégés, en nombre borné."""
+        out: list[str] = []
+        for sus in sorted(signal.suspects, key=lambda x: x.share, reverse=True):
+            if sus.share < self.s.block_min_share:
+                continue
+            try:
+                ip = ipaddress.ip_address(sus.value)
+            except ValueError:
+                obs.event("suspect_ignored", logging.WARNING, value=sus.value[:64], reason="IP invalide")
+                continue
+            if any(ip in net for net in self.s.protected_cidrs):
+                obs.event("suspect_ignored", logging.WARNING, value=str(ip), reason="réseau protégé")
+                continue
+            out.append(str(ip))
+        return out[: self.s.max_block_ips]
+
+    def _add_blocks(self, ips: list[str]) -> list[str]:
+        with self.lock:
+            expiry = time.time() + self.s.block_ttl_s
+            for ip in ips:
+                self.blocks[ip] = expiry
+            self._save_blocks()
+            return sorted(self.blocks)
+
+    def expire_blocks(self) -> None:
+        """Débloque les IP dont le TTL est passé (un faux positif ne bloque pas quelqu'un à vie)."""
+        with self.lock:
+            gone = [ip for ip, exp in self.blocks.items() if exp <= time.time()]
+            if not gone:
+                return
+            for ip in gone:
+                del self.blocks[ip]
+            self._save_blocks()
+            remaining = sorted(self.blocks)
+        try:
+            self.executor.run("block_source", "expiry", {"block_ips": remaining, "block_ttl_s": self.s.block_ttl_s})
+            obs.event("blocks_expired", ips=gone, remaining=len(remaining))
+        except ActionError as exc:
+            obs.event("action_failed", logging.WARNING, action="block_source", error=str(exc), reason="expiry")
+
+    def _load_blocks(self) -> dict[str, float]:
+        try:
+            return {k: float(v) for k, v in json.loads(self._blocks_path.read_text()).items()}
+        except (OSError, ValueError):
+            return {}
+
+    def _save_blocks(self) -> None:
+        tmp = self._blocks_path.with_name("blocks.json.tmp")
+        tmp.write_text(json.dumps(self.blocks))
+        tmp.replace(self._blocks_path)
+
+    @staticmethod
+    def _age_s(iso: str | None) -> float:
+        if not iso:
+            return float("inf")
+        return (datetime.now(timezone.utc) - datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)).total_seconds()

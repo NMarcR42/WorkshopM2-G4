@@ -36,12 +36,13 @@ flowchart LR
 | Service | Domaine | Rôle | Techno | Rôle machine |
 |---|---|---|---|---|
 | `waf` | CYBER | Filtre l'entrée, bloque les IP désignées par la remédiation | nginx + ModSecurity CRS | front |
-| `frontend` | DEV | Vue paiement (client) et vue supervision (jury) | React + Tailwind | front |
+| `frontend` | DEV | Vue paiement (client) | React + Tailwind | front |
 | `api` | DEV | Virements fictifs ([détails](../dev/api/README.md)) | FastAPI | back |
 | `auth` | DEV | Authentification, émission des JWT | FastAPI | back |
 | `db` | DEV/INFRA | Comptes et transactions | PostgreSQL | back |
 | `canary` | DEV | Rejoue une transaction toutes les 5 s (`payment_probe_success`) et expose `POST /verify` : **la preuve de reprise** | FastAPI | ops |
 | `remediation` | DEV | Reçoit le signal, choisit l'action, l'exécute, vérifie via `canary`, journalise | FastAPI | ops |
+| `supervision` | DEV | Vue du jury : état du paiement, incidents, courbes avant / pendant / après. Lecture seule, **hors WAF** (local, comme Grafana) | FastAPI + React + Tailwind | ops |
 | `detector` | IA | Score des fenêtres de trafic, envoie le signal d'anomalie | scikit-learn (Isolation Forest) | ops |
 | `assistant`, `ollama` | IA | Aide les opérateurs (RAG sur `doc/`), lecture seule, ne pilote rien | LangChain + Ollama (≤ 8B) | ai |
 | `prometheus`, `loki`, `grafana` | INFRA | Métriques, logs (= SIEM léger), tableaux de bord | — | ops |
@@ -83,7 +84,7 @@ Même code, mêmes composes ; seul `.env` change.
 |---|---|---|---|
 | `front` | `infra/compose/front.yml` | waf, frontend | **WAF :8080 vers le réseau** (seul port public) |
 | `back` | `infra/compose/back.yml` | api, auth, db | api/auth sur l'IP privée, filtrés au seul WAF ; db jamais |
-| `ops` | `infra/compose/ops.yml` | remediation, canary, detector, prometheus, loki, grafana | Grafana en local/WireGuard ; Loki sur l'IP privée |
+| `ops` | `infra/compose/ops.yml` | remediation, canary, supervision, detector, prometheus, loki, grafana | Grafana en local/WireGuard ; Loki sur l'IP privée |
 | `ai` (optionnelle) | `infra/compose/ai.yml` | ollama, assistant | assistant en local |
 | toutes | `infra/compose/agents.yml` | promtail, cadvisor | cAdvisor sur l'IP privée |
 
@@ -136,6 +137,7 @@ ansible-playbook -i infra/ansible/inventory/${INVENTORY}.yml \
 
 - Les groupes d'inventaire portent le nom des services (`waf`, `frontend`, `api`, `auth`, `db`) : voir `infra/ansible/inventory/` (`local.yml` = un seul hôte atteint par SSH, pour tester le mode `ssh` sans VM).
 - Les commandes et appels sont construits par `remediation` ; rien du signal n'est passé au shell. Timeout 60 s. Actions idempotentes.
+- **Liste de blocage** (contrat avec le WAF) : `block_ips` est toujours la liste **complète** ; en mode `local` elle est écrite dans `blocklist.txt` du volume `waf-blocklist` (une IP par ligne, fichier remplacé atomiquement), puis le WAF est redémarré pour la relire. Les IP expirées (`block_ttl_s`) sont retirées par un nouvel appel avec la liste réduite.
 - Code retour OK = action appliquée, **pas** service rétabli (seul `/verify` le prouve).
 - Chaque action écrit `/var/lib/resilience/incidents/<id>/<action>.json` (`changed`, `started_at`, `ended_at`) sur la machine `ops`.
 
@@ -145,8 +147,8 @@ ansible-playbook -i infra/ansible/inventory/${INVENTORY}.yml \
 |---|---|---|
 | `edge` | waf, canary | entrée publique |
 | `app` | waf, frontend, api, auth, db | métier ; db jamais publiée |
-| `obs` | prometheus, loki, grafana, agents | observabilité / SIEM |
-| `ctrl` | remediation, detector, canary, docker-proxy | contrôle ; **jamais exposé** |
+| `obs` | prometheus, loki, grafana, supervision, agents, api (mono-hôte : pour être scrutée) | observabilité / SIEM |
+| `ctrl` | remediation, detector, canary, supervision, docker-proxy | contrôle ; **jamais exposé** |
 | `ai` | ollama, assistant | assistant isolé, sans accès système |
 
 ## Routage de l'entrée (WAF)

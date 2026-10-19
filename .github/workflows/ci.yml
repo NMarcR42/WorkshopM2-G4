@@ -73,7 +73,7 @@ jobs:
       - name: Lint + tests des autres services (sautes tant qu'ils n'ont pas de code)
         run: |
           pip install ruff pytest
-          for d in dev/auth dev/canary dev/remediation ia/detector ia/assistant; do
+          for d in dev/auth dev/canary dev/remediation dev/supervision ia/detector ia/assistant; do
             [ -n "$(git ls-files "$d/*.py")" ] || continue
             # requirements-dev.txt (pytest, httpx...) si présent, sinon requirements.txt
             if [ -f "$d/requirements-dev.txt" ]; then
@@ -102,7 +102,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build des autres images qui ont un Dockerfile
         run: |
-          for d in dev/frontend dev/auth dev/canary dev/remediation ia/detector ia/assistant; do
+          for d in dev/frontend dev/supervision dev/auth dev/canary dev/remediation ia/detector ia/assistant; do
             if [ -f "$d/Dockerfile" ]; then
               docker build -t "resilience-$(basename "$d")" "$d"
             fi

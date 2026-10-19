@@ -9,6 +9,9 @@ secrets:
 
 services:
   remediation:
+    build:
+      context: ./dev/remediation
+      args: { WITH_ANSIBLE: "1" }       # l'image par defaut n'embarque pas Ansible
     environment:
       ANSIBLE_INVENTORY: /ansible/inventory/${INVENTORY:-lab}.yml   # lab = multi-machines, local = un hote via SSH
     secrets: [ansible_ssh_key]

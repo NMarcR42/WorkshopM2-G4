@@ -42,7 +42,7 @@ Un responsable par domaine, à renseigner lundi (une personne peut en porter plu
 
 ### Mardi — production (chaque brique tourne en mono-hôte)
 
-- DEV : `auth` ✅ (émet les JWT) · `frontend` paiement ✅ (la vue supervision reste à faire) · `canary` ✅ (probe + `/verify` avec `ledger/check` ; reste à tester derrière le vrai WAF) · `remediation` (interface (a), executor `local`, actions `block_source` et `restart_service`, journal d'incident)
+- DEV : `auth` ✅ (émet les JWT) · `frontend` paiement ✅ · `supervision` ✅ (vue du jury) · `canary` ✅ (probe + `/verify` avec `ledger/check` ; reste à tester derrière le vrai WAF) · `remediation` ✅ (interface (a), executor `local`, 3 actions, journal d'incident ; reste à brancher le vrai détecteur et le WAF)
 - INFRA : Prometheus + Loki + Grafana provisionnés (dashboard « avant / pendant / après ») · `scripts/reset-demo.sh` · Dockerfiles intégrés au compose
 - IA : générateur de trafic normal → jeu de données → Isolation Forest v1 → modèle figé · client qui envoie le signal (a)
 - CYBER : WAF (CRS, `X-Forwarded-For`, liste de blocage rechargeable) · script de flood depuis le PC attaquant · règles SIEM (403 WAF, échecs de login)
@@ -53,7 +53,7 @@ Un responsable par domaine, à renseigner lundi (une personne peut en porter plu
 
 - Première boucle complète en mono-hôte, puis répétée jusqu'à 10/10 (réglage des fenêtres, du nombre de fenêtres anormales, du cooldown)
 - Premiers tests de restauration (l'API et la base tombent, le service revient et `/verify` passe)
-- Vue de supervision React (état du service, incidents, avancement de la reprise) · assistant RAG branché sur `doc/`
+- Assistant RAG branché sur `doc/`
 - PCA/PRA terminé ; dossier technique : plan et premières sections
 - **Décision go / no-go multi-machines (mercredi soir)** : VM prêtes *et* boucle 10/10 en mono-hôte → on tente le déploiement multi-machines (`REMEDIATION_MODE=ssh`). Sinon la démo se fait en mono-hôte, le multi-machines reste documenté comme cible.
 

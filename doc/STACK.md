@@ -29,7 +29,7 @@ Ce que chaque outil fait **chez nous**, et les pièges déjà rencontrés. Les d
 | **nginx + ModSecurity (CRS)** | WAF unique point d'entrée ; applique la liste de blocage | `cyber/waf/` | Tag d'image à épingler après le premier pull. |
 | **SOPS + age** | Secrets chiffrés pour les déploiements partagés | `cyber/` | Pas nécessaire en dev local (`init-local.sh`). |
 | **GitHub Actions** | CI sur chaque PR ; déploiement manuel sur runner self-hosted | `.github/workflows/` | Voir [GITHUB](GITHUB.md). |
-| **React + Tailwind** | Vue paiement et vue supervision | `dev/frontend/` | Passe par le WAF, jamais directement par l'API. |
+| **React + Tailwind** | Vue paiement (`dev/frontend/`) et vue supervision (`dev/supervision/ui/`) | `dev/` | La vue paiement passe par le WAF, jamais directement par l'API ; la supervision est locale et lit un service dédié. |
 
 ## Pièges Windows (Git Bash / Docker Desktop)
 
