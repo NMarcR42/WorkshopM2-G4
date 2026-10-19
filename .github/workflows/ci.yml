@@ -30,7 +30,7 @@ jobs:
           - { roles: "ai", mode: "local" }
     steps:
       - uses: actions/checkout@v4
-      - name: Clone frais, mono-hote : aucun secret ni cle SSH fournis
+      - name: "Clone frais mono-hote (aucun secret ni cle SSH fournis)"
         run: ./scripts/init-local.sh
       - name: Cle SSH factice (mode ssh uniquement)
         if: matrix.mode == 'ssh'
@@ -98,5 +98,7 @@ jobs:
       - name: Build des autres images qui ont un Dockerfile
         run: |
           for d in dev/frontend dev/auth dev/canary dev/remediation ia/detector ia/assistant; do
-            [ -f $d/Dockerfile ] && docker build -t resilience-$(basename $d) $d || true
+            if [ -f "$d/Dockerfile" ]; then
+              docker build -t "resilience-$(basename "$d")" "$d"
+            fi
           done
