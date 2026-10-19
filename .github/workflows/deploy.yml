@@ -1,0 +1,22 @@
+name: Deploy (VM Proxmox)
+
+# Deploie le(s) role(s) de la machine du runner (variable ROLES de son .env). Une machine = un runner.
+# Declenchement MANUEL volontaire : un auto-deploy sur main pourrait casser la plateforme juste avant la demo.
+# Necessite un runner self-hosted installe sur la VM (la VM n'est joignable que via WireGuard,
+# donc un runner GitHub heberge ne peut pas l'atteindre). Cle age privee presente uniquement sur la VM.
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - name: Secrets + configuration
+        run: |
+          [ -f .env ] || cp .env.example .env
+          ./scripts/decrypt-secrets.sh
+      - name: Deploiement
+        run: ./scripts/compose.sh up -d --build --remove-orphans
+      - name: Etat
+        run: ./scripts/compose.sh ps

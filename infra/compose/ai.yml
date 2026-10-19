@@ -1,0 +1,31 @@
+# Machine AI (optionnelle, fusionnable avec OPS) : modele de langage local + assistant RAG.
+name: resilience
+
+networks:
+  ai:
+
+volumes:
+  ollama-data:
+  rag-index:
+
+services:
+  ollama:
+    image: ollama/ollama:0.5.7
+    networks: [ai]
+    volumes:
+      - ollama-data:/root/.ollama
+    restart: unless-stopped
+
+  assistant:
+    build: ./ia/assistant               # LangChain + Ollama ; lecture seule, aucun acces systeme
+    networks: [ai]
+    ports:
+      - "${ADMIN_BIND:-127.0.0.1}:8501:8501"
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+    volumes:
+      - ./doc:/docs:ro
+      - rag-index:/index
+    depends_on: [ollama]
+    restart: unless-stopped

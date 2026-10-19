@@ -1,0 +1,11 @@
+# Cibles Prometheus. Par defaut : tout sur un seul hote (noms de services Docker).
+# Multi-machines : remplacer par l'IP de chaque machine (ex. 10.0.0.2:8000).
+# Les cibles pas encore implementees apparaissent "down" : normal.
+- targets: ["api:8000"]
+  labels: { service: api, machine: back }
+- targets: ["canary:8000"]
+  labels: { service: canary, machine: ops }
+- targets: ["remediation:8000"]
+  labels: { service: remediation, machine: ops }
+- targets: ["cadvisor:8080"]
+  labels: { service: cadvisor }

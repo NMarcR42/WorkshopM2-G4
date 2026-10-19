@@ -1,0 +1,16 @@
+# Remediation MODE SSH (OPTIONNEL, multi-machines) : Ansible/SSH vers les autres machines.
+# Prerequis : un utilisateur `resilience` restreint sur chaque machine et la cle ansible_ssh_key
+# (voir doc/ARCHITECTURE.md, "Modes de deploiement"). Active avec REMEDIATION_MODE=ssh.
+name: resilience
+
+secrets:
+  ansible_ssh_key:
+    file: ./.secrets/ansible_ssh_key
+
+services:
+  remediation:
+    environment:
+      ANSIBLE_INVENTORY: /ansible/inventory/${INVENTORY:-lab}.yml   # lab = multi-machines, local = un hote via SSH
+    secrets: [ansible_ssh_key]
+    volumes:
+      - ./infra/ansible:/ansible:ro

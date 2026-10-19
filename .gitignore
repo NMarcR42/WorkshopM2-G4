@@ -1,0 +1,21 @@
+# Secrets dechiffres et environnement local : JAMAIS commites
+.env
+.secrets/
+*.key
+*.pem
+keys.txt
+age-key.txt
+
+# Python / Node
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+dist/
+
+# Donnees locales
+*.log
+ia/detector/data/raw/
+.DS_Store
+
+.pytest_cache/

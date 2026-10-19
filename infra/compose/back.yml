@@ -1,0 +1,67 @@
+# Machine BACK : metier (API, auth) + base PostgreSQL. La base n'est jamais publiee.
+name: resilience
+
+networks:
+  app:
+
+volumes:
+  db-data:
+
+secrets:
+  db_password:
+    file: ./.secrets/db_password
+  jwt_secret:
+    file: ./.secrets/jwt_secret
+
+services:
+  db:
+    image: postgres:16-alpine
+    networks: [app]                      # aucun port publie
+    environment:
+      POSTGRES_DB: payments
+      POSTGRES_USER: payments
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payments -d payments"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build: ./dev/api
+    networks: [app]
+    ports:
+      - "${BACK_BIND:-127.0.0.1}:${API_PORT:-8000}:8000"   # multi-machines : IP privee, filtree au seul WAF
+    environment:
+      DB_HOST: db
+      DB_NAME: payments
+      DB_USER: payments
+      DB_PASSWORD_FILE: /run/secrets/db_password
+      JWT_SECRET_FILE: /run/secrets/jwt_secret
+    secrets: [db_password, jwt_secret]
+    depends_on:
+      db: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 512M }   # limite volontaire : l'attaque doit pouvoir saturer l'API
+    restart: unless-stopped
+
+  auth:
+    build: ./dev/auth
+    networks: [app]
+    ports:
+      - "${BACK_BIND:-127.0.0.1}:${AUTH_PORT:-8001}:8000"
+    environment:
+      DB_HOST: db
+      DB_NAME: payments
+      DB_USER: payments
+      DB_PASSWORD_FILE: /run/secrets/db_password
+      JWT_SECRET_FILE: /run/secrets/jwt_secret
+    secrets: [db_password, jwt_secret]
+    depends_on:
+      db: { condition: service_healthy }
+    restart: unless-stopped

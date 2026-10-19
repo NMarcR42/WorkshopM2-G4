@@ -1,0 +1,23 @@
+# Inventaire "un seul hote" : toutes les machines logiques sont le meme hote Docker.
+# Ansible s'y connecte en SSH avec l'utilisateur restreint `resilience`.
+# Les groupes portent le nom des services : les playbooks ciblent `hosts: {{ target_service }}`.
+all:
+  vars:
+    ansible_user: resilience
+    ansible_ssh_private_key_file: /run/secrets/ansible_ssh_key
+    ansible_python_interpreter: /usr/bin/python3
+  children:
+    front:
+      hosts: { host1: { ansible_host: host.docker.internal } }
+    back:
+      hosts: { host1: { ansible_host: host.docker.internal } }
+    waf:
+      children: { front: }
+    frontend:
+      children: { front: }
+    api:
+      children: { back: }
+    auth:
+      children: { back: }
+    db:
+      children: { back: }

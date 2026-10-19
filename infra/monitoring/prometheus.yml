@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 5s
+
+# Les cibles sont dans targets.yml (une IP par machine en deploiement multi-machines).
+scrape_configs:
+  - job_name: prometheus
+    static_configs: [{ targets: ["localhost:9090"] }]
+  - job_name: services
+    file_sd_configs:
+      - files: ["/etc/prometheus/targets.yml"]

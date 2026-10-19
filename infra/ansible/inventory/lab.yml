@@ -1,0 +1,21 @@
+# Inventaire multi-machines : remplacer les IP par celles du reseau prive (WireGuard / hotspot).
+all:
+  vars:
+    ansible_user: resilience
+    ansible_ssh_private_key_file: /run/secrets/ansible_ssh_key
+    ansible_python_interpreter: /usr/bin/python3
+  children:
+    front:
+      hosts: { vm-front: { ansible_host: 10.0.0.1 } }
+    back:
+      hosts: { vm-back: { ansible_host: 10.0.0.2 } }
+    waf:
+      children: { front: }
+    frontend:
+      children: { front: }
+    api:
+      children: { back: }
+    auth:
+      children: { back: }
+    db:
+      children: { back: }

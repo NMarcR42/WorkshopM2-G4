@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  secrets-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  compose-validate:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { roles: "all", mode: "local" }
+          - { roles: "all", mode: "ssh" }
+          - { roles: "front", mode: "local" }
+          - { roles: "back", mode: "local" }
+          - { roles: "ops", mode: "local" }
+          - { roles: "ops", mode: "ssh" }
+          - { roles: "ai", mode: "local" }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone frais, mono-hote : aucun secret ni cle SSH fournis
+        run: ./scripts/init-local.sh
+      - name: Cle SSH factice (mode ssh uniquement)
+        if: matrix.mode == 'ssh'
+        run: echo ci > .secrets/ansible_ssh_key
+      - run: ROLES="${{ matrix.roles }}" REMEDIATION_MODE="${{ matrix.mode }}" ./scripts/compose.sh config --quiet
+
+  api:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: payments
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: payments
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U payments" --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install ruff -r dev/api/requirements-dev.txt
+      - run: ruff check dev/api
+      - name: Tests (avec PostgreSQL)
+        working-directory: dev/api
+        env:
+          TEST_DB_HOST: 127.0.0.1
+          DB_PASSWORD: test
+        run: pytest -q
+      - name: Build de l'image
+        run: docker build -t resilience-api dev/api
+
+  python-other:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Lint + tests des autres services (sautes tant qu'ils n'ont pas de code)
+        run: |
+          pip install ruff pytest
+          for d in dev/auth dev/canary dev/remediation ia/detector ia/assistant; do
+            [ -n "$(git ls-files "$d/*.py")" ] || continue
+            [ -f $d/requirements.txt ] && pip install -r $d/requirements.txt
+            ruff check $d
+            (cd $d && { pytest -q || [ $? -eq 5 ]; })   # 5 = aucun test collecte
+          done
+
+  ansible:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax-check des playbooks (saute s'il n'y en a pas)
+        run: |
+          pbs=$(ls infra/ansible/playbooks/*.yml 2>/dev/null || true)
+          [ -z "$pbs" ] && { echo "Aucun playbook"; exit 0; }
+          pip install ansible-core
+          for p in $pbs; do ansible-playbook --syntax-check -i infra/ansible/inventory/lab.yml "$p"; done
+
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build des autres images qui ont un Dockerfile
+        run: |
+          for d in dev/frontend dev/auth dev/canary dev/remediation ia/detector ia/assistant; do
+            [ -f $d/Dockerfile ] && docker build -t resilience-$(basename $d) $d || true
+          done

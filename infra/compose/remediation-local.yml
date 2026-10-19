@@ -1,0 +1,38 @@
+# Remediation MODE LOCAL (defaut) : mono-hote, aucun reseau traverse, aucune cle SSH.
+# La remediation parle a un docker-proxy qui n'autorise que restart/stop/kill.
+# Ajoute automatiquement par scripts/compose.sh quand le role ops est actif et REMEDIATION_MODE=local.
+name: resilience
+
+networks:
+  ctrl:
+
+volumes:
+  waf-blocklist:
+
+services:
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    networks: [ctrl]                     # joignable uniquement par remediation
+    environment:
+      # Teste (tecnativa/docker-socket-proxy 0.3.0) : ALLOW_RESTARTS n'agit que si POST=1 ; pour que POST=1 n'ouvre pas
+      # containers/create, CONTAINERS reste a 0. Resultat : restart/stop/kill = 204 ; create, exec, delete, images,
+      # volumes et TOUTE lecture de /containers = 403. L'etat du service se lit via canary/Prometheus, pas via Docker.
+      POST: 1
+      ALLOW_RESTARTS: 1
+      CONTAINERS: 0
+      VERSION: 1                         # negociation de version du client Docker
+      PING: 1
+      EXEC: 0
+      IMAGES: 0
+      VOLUMES: 0
+      NETWORKS: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+  remediation:
+    environment:
+      DOCKER_HOST: tcp://docker-proxy:2375
+    volumes:
+      - waf-blocklist:/etc/waf/blocklist   # liste de blocage lue par le WAF
+    depends_on: [docker-proxy]

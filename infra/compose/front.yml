@@ -1,0 +1,29 @@
+# Machine FRONT : point d'entree public (WAF) + interface web.
+name: resilience
+
+networks:
+  edge:
+  app:
+
+volumes:
+  waf-blocklist:   # mono-hote : volume partage avec remediation (remediation-local.yml)
+
+services:
+  waf:
+    image: owasp/modsecurity-crs:nginx   # TODO: epingler un tag apres le 1er pull
+    networks: [edge, app]
+    ports:
+      - "${PUBLIC_BIND:-0.0.0.0}:${WAF_PORT:-8080}:8080"   # SEUL port ouvert au reseau pedagogique
+    environment:
+      BACKEND: ${API_URL:-http://api:8000}   # multi-machines : http://<ip-machine-back>:8000
+    volumes:
+      - ./cyber/waf:/etc/waf/conf:ro
+      # defaut = volume nomme (mono-hote). Multi-machines : WAF_BLOCKLIST_SRC=/opt/resilience/waf-blocklist (chemin hote,
+      # ecrit par le playbook block_source via SSH).
+      - ${WAF_BLOCKLIST_SRC:-waf-blocklist}:/etc/waf/blocklist:ro
+    restart: unless-stopped
+
+  frontend:
+    build: ./dev/frontend
+    networks: [app]
+    restart: unless-stopped

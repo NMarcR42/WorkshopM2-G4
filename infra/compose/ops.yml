@@ -1,0 +1,88 @@
+# Machine OPS : supervision, detection, remediation, preuve de reprise.
+# Mode d'execution de la remediation (REMEDIATION_MODE dans .env), ajoute par scripts/compose.sh :
+#   local (defaut) -> remediation-local.yml : docker-proxy (restart uniquement), aucun reseau traverse
+#   ssh            -> remediation-ssh.yml   : Ansible/SSH vers les autres machines (multi-machines)
+name: resilience
+
+networks:
+  obs:
+  ctrl:
+  edge:
+
+volumes:
+  prometheus-data:
+  loki-data:
+  grafana-data:
+  incidents:
+
+secrets:
+  engine_token:
+    file: ./.secrets/engine_token
+  grafana_admin_password:
+    file: ./.secrets/grafana_admin_password
+
+services:
+  remediation:
+    build: ./dev/remediation
+    networks: [ctrl, obs]               # pas sur edge : non joignable par le trafic client
+    environment:
+      CANARY_URL: ${CANARY_URL:-http://canary:8000}
+      ENGINE_TOKEN_FILE: /run/secrets/engine_token
+      REMEDIATION_MODE: ${REMEDIATION_MODE:-local}
+    secrets: [engine_token]
+    volumes:
+      - incidents:/var/lib/resilience/incidents
+    depends_on: [canary]
+    restart: unless-stopped
+
+  canary:
+    build: ./dev/canary                 # transaction fictive via le WAF + POST /verify
+    networks: [edge, ctrl, obs]
+    environment:
+      TARGET_URL: ${WAF_URL:-http://waf:8080}   # multi-machines : http://<ip-machine-front>:8080
+      PROBE_INTERVAL_S: "5"
+    restart: unless-stopped
+
+  detector:
+    build: ./ia/detector                # Isolation Forest : lit Prometheus/Loki, appelle remediation
+    networks: [obs, ctrl]
+    environment:
+      PROMETHEUS_URL: http://prometheus:9090
+      LOKI_URL: http://loki:3100
+      ENGINE_URL: http://remediation:8000
+      ENGINE_TOKEN_FILE: /run/secrets/engine_token
+    secrets: [engine_token]
+    depends_on: [prometheus, remediation]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    networks: [obs]
+    volumes:
+      - ./infra/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/monitoring/targets.yml:/etc/prometheus/targets.yml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.2.1
+    networks: [obs]
+    ports:
+      - "${OPS_BIND:-127.0.0.1}:3100:3100"   # multi-machines : IP privee, les agents des autres machines y poussent leurs logs
+    volumes:
+      - loki-data:/loki
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    networks: [obs]
+    ports:
+      - "${ADMIN_BIND:-127.0.0.1}:3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+    secrets: [grafana_admin_password]
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on: [prometheus, loki]
+    restart: unless-stopped

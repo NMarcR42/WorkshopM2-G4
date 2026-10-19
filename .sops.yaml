@@ -1,0 +1,7 @@
+# Chiffrement des secrets avec SOPS + age.
+# Chaque membre genere une cle (age-keygen), garde la PRIVEE hors du depot,
+# et ajoute sa cle PUBLIQUE (age1...) ci-dessous, separee par des virgules.
+creation_rules:
+  - path_regex: cyber/secrets/.*\.enc\.yaml$
+    age: >-
+      REMPLACER_PAR_LES_CLES_PUBLIQUES_AGE_DE_L_EQUIPE
