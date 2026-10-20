@@ -1,9 +1,9 @@
 """Interface (b) : exécution d'une action. Deux executors, même contrat, choisis par REMEDIATION_MODE.
 
-Rien du signal n'atteint un shell : les noms de service viennent d'une liste fermée (Literal du schéma),
-les IP sont validées en amont, les commandes sont des listes d'arguments (jamais une chaîne passée à un shell).
+Rien de l'alerte n'atteint un shell : les services viennent d'une liste fermée, les IP sont validées en amont,
+les commandes sont des listes d'arguments (jamais une chaîne passée à un shell).
+Les noms d'action sont ceux des playbooks de l'infra (remediation/<action>.yml).
 """
-import json
 import os
 import subprocess
 from pathlib import Path
@@ -18,6 +18,53 @@ class ActionError(Exception):
     pass
 
 
+class AnsibleExecutor:
+    """Mode VM-OPS : un playbook Ansible par action, lancé depuis le dépôt ansible/ monté en lecture seule."""
+
+    def __init__(self, s: Settings):
+        self.s = s
+
+    def run(self, action: str, incident_id: str, params: dict) -> dict:
+        extra = self._extra_vars(action, params)
+        return self._playbook(action, extra)
+
+    def unblock(self, ips: list[str], remaining: list[str]) -> dict:
+        """Le contrat infra ne définit que block_ip : le déblocage n'existe que si l'infra livre unblock_ip.yml."""
+        if not (Path(self.s.ansible_workdir) / self.s.ansible_playbooks_subdir / "unblock_ip.yml").is_file():
+            raise ActionError("unblock_ip.yml absent : déblocage à faire côté WAF (ban expiré ou ra-remediate unblock-ip)")
+        for ip in ips:
+            self._playbook("unblock_ip", {"ip": ip})
+        return {"changed": True, "ips": ips}
+
+    @staticmethod
+    def _extra_vars(action: str, params: dict) -> dict:
+        if action == "block_ip":
+            return {"ip": params["ip"]}
+        if action in ("restart", "recreate", "isolate"):
+            return {"service": params["service"]}
+        return {}  # restore_db, rollback_vm : cible fixée par le playbook
+
+    def _playbook(self, action: str, extra: dict) -> dict:
+        cmd = ["ansible-playbook"]
+        if self.s.ansible_inventory:
+            cmd += ["-i", self.s.ansible_inventory]
+        cmd.append(f"{self.s.ansible_playbooks_subdir}/{action}.yml")
+        for k, v in extra.items():
+            cmd += ["-e", f"{k}={v}"]
+        try:
+            r = subprocess.run(cmd, cwd=self.s.ansible_workdir, capture_output=True, text=True, check=False,
+                               timeout=self.s.ansible_timeout_s)
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            raise ActionError(f"ansible-playbook: {type(exc).__name__}") from exc
+        # Le code retour seul ne suffit pas : le playbook doit aussi annoncer que le service est rétabli.
+        if r.returncode != 0:
+            raise ActionError(f"ansible-playbook code {r.returncode}: {(r.stdout + r.stderr)[-300:]}")
+        if self.s.ansible_success_marker not in r.stdout:
+            raise ActionError(f"playbook terminé sans « {self.s.ansible_success_marker} »: {r.stdout[-300:]}")
+        lines = r.stdout.strip().splitlines()
+        return {"changed": True, "rc": r.returncode, "resume": lines[-1][:200] if lines else ""}
+
+
 class LocalExecutor:
     """Mode mono-hôte : docker-proxy (restart uniquement) + liste de blocage dans un volume partagé avec le WAF."""
 
@@ -27,12 +74,16 @@ class LocalExecutor:
         self.base = s.docker_host.replace("tcp://", "http://", 1)
 
     def run(self, action: str, incident_id: str, params: dict) -> dict:
-        if action == "block_source":
+        if action == "block_ip":
             return self._block(params["block_ips"])
-        if action in ("restart_service", "rollback_service"):
-            # Pas de retour de version en local (limite assumée, voir ARCHITECTURE) : le rollback est un redémarrage.
-            return self._restart(params["target_service"])
-        raise ActionError(f"action inconnue: {action}")
+        if action in ("restart", "recreate"):
+            # Pas de recréation sans socket Docker complet (limite assumée, voir ARCHITECTURE) : recreate = redémarrage.
+            return self._restart(params["service"])
+        # isolate, restore_db, rollback_vm : il faut Ansible et l'hyperviseur, donc rien à simuler en local.
+        raise ActionError(f"action {action} indisponible en mode local")
+
+    def unblock(self, ips: list[str], remaining: list[str]) -> dict:
+        return self._block(remaining)
 
     def _block(self, ips: list[str]) -> dict:
         path = Path(self.s.blocklist_file)
@@ -57,32 +108,9 @@ class LocalExecutor:
         return {"changed": True, "container": name}
 
 
-class SshExecutor:
-    """Mode multi-machines : un playbook Ansible par action (infra/ansible/playbooks/<action>.yml)."""
-
-    def __init__(self, s: Settings):
-        self.s = s
-
-    def run(self, action: str, incident_id: str, params: dict) -> dict:
-        if not self.s.ansible_inventory:
-            raise ActionError("ANSIBLE_INVENTORY non défini")
-        cmd = [
-            "ansible-playbook", "-i", self.s.ansible_inventory,
-            str(Path(self.s.ansible_playbooks) / f"{action}.yml"),
-            "-e", json.dumps({"incident_id": incident_id, **params}),
-        ]
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=self.s.action_timeout_s, check=False)
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            raise ActionError(f"ansible-playbook: {type(exc).__name__}") from exc
-        if r.returncode != 0:
-            raise ActionError(f"ansible-playbook code {r.returncode}: {(r.stdout + r.stderr)[-300:]}")
-        return {"changed": True}
-
-
 def make_executor(s: Settings):
-    if s.mode == "ssh":
-        return SshExecutor(s)
+    if s.mode in ("ansible", "ssh"):  # « ssh » : ancien nom, encore posé par infra/compose/remediation-ssh.yml
+        return AnsibleExecutor(s)
     if s.mode == "local":
         return LocalExecutor(s)
     raise RuntimeError(f"REMEDIATION_MODE inconnu: {s.mode}")

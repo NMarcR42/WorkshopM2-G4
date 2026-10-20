@@ -43,34 +43,19 @@ La sonde qui **prouve la reprise** : un conteneur qui redémarre ne prouve rien,
 
 ## remediation
 
-Reçoit le signal (interface (a)), choisit l'action dans la liste fermée, l'exécute (interface (b)) et ne conclut qu'avec la preuve du canary.
+Reçoit les alertes Alertmanager (contrat infra), choisit l'action, l'exécute (interface (b)) et ne conclut qu'avec la preuve du canary.
 
-Pour chaque signal (`POST /v1/anomalies`, Bearer `engine_token`, réponse 202) :
-1. **Dédoublonnage** : même `anomaly_id`, incident déjà en cours ou résolu depuis moins de `REMEDIATION_COOLDOWN_S` (30 s) → on renvoie l'incident existant (`deduplicated: true`).
-2. **Garde faux positif** : aucune IP à bloquer et le canary passe → `RESOLVED` sans rien toucher.
-3. **Escalade** : `block_source` (si une IP suspecte a une part de trafic ≥ `BLOCK_MIN_SHARE`) → `restart_service` → `rollback_service`. Après chaque action, on attend que `POST /verify` passe (`VERIFY_TIMEOUT_S`, 30 s). Le premier succès clôt l'incident (`RESOLVED`, `resolved_by` = l'action) ; liste épuisée → `UNRESOLVED` (intervention humaine, visible).
-4. **Journal** : `incident.json` (état + chronologie) et `<action>.json` par incident, dans le volume `incidents` ; relisible par `GET /v1/incidents` et `/v1/incidents/{id}` (même token). Un incident interrompu par un redémarrage du moteur est marqué `UNRESOLVED`.
+Pour chaque alerte `firing` (`POST /api/v1/alerts`, webhook Alertmanager v4, Bearer = secret `alert_webhook_token`, réponse 200 immédiate, traitement en arrière-plan) :
+1. **Mapping** (`app/alerts.py`, même table que le `receiver.py` de l'infra) : `labels.remediation` ∈ `restart|recreate|isolate|block_ip|restore_db|rollback_vm|auto` ; `auto` : `dos`→`block_ip`, `injection`→`restart`, `exfiltration`→`isolate`. `labels.service` (défaut `api`, liste `ALLOWED_SERVICES`), `labels.client_ip` pour `block_ip`.
+2. **Dédoublonnage / anti-rebond** : même alerte (fingerprint + startsAt), incident déjà en cours, résolu depuis moins de `REMEDIATION_COOLDOWN_S` (30 s), ou même (action, cible) relancée avant `ACTION_COOLDOWN_S` (90 s) → ignorée.
+3. **Garde faux positif** : alerte `auto` (hors `block_ip`) et canary qui passe → `RESOLVED` sans rien toucher (`AUTO_VERIFY_FIRST=0` pour désactiver).
+4. **Escalade** : action demandée → (`block_ip`: `restart` → `recreate` ; `restart`: `recreate`). `rollback_vm`, `restore_db`, `isolate` ne s'enchaînent jamais seuls. Après chaque action, on attend que `POST /verify` passe (`VERIFY_TIMEOUT_S`, 30 s). Premier succès → `RESOLVED` (`resolved_by` = l'action) ; liste épuisée → `UNRESOLVED` (intervention humaine, visible).
+5. **Journal** : `incident.json` et `<action>.json` par incident, dans le volume `incidents` ; lisibles par `GET /v1/incidents` et `/v1/incidents/{id}` (Bearer `ENGINE_TOKEN`, à défaut `alert_webhook_token`). Un incident interrompu par un redémarrage est marqué `UNRESOLVED`.
 
-Garde-fous : `target_service` limité à `api|auth|frontend` ; IP validées, jamais dans `PROTECTED_CIDRS` (réseaux Docker, donc le canary), 20 IP au plus ; blocage expiré après `BLOCK_TTL_S` (le moteur réécrit alors la liste) ; aucune valeur du signal n'atteint un shell. Métriques : `remediation_incidents_total{status}`, `remediation_actions_total{action,result}`, `remediation_recovery_seconds`, `remediation_incidents_active`.
+Garde-fous : service en liste fermée ; IP validées, jamais dans `PROTECTED_CIDRS`, blocage expiré après `BLOCK_TTL_S` ; aucune valeur d'alerte n'atteint un shell. Métriques : `remediation_incidents_total{status}`, `remediation_actions_total{action,result}`, `remediation_recovery_seconds`, `remediation_incidents_active`.
 
-Executor `local` : `POST /containers/<nom>/restart` via le docker-proxy (nom = `CONTAINER_NAME_TEMPLATE`, par défaut `resilience-{service}-1`) et écriture de `blocklist.txt` (voir [contrat WAF](../doc/ARCHITECTURE.md#interface-b--remediation--exécution-de-laction)). Executor `ssh` : `ansible-playbook` avec `-e` JSON, **non testé** (playbooks à écrire par INFRA).
-
-## supervision
-
-La vue du jury, une page : bandeau d'état (sain / dégradé / remédiation en cours / reprise vérifiée / inconnu), courbes de l'état du paiement, du trafic et de la latence de l'API sur 15 min avec les incidents en surbrillance, chronologie de chaque incident (action, preuve du canary). Rafraîchie toutes les 2 s.
-
-- Service FastAPI (`app/`) + site React (`ui/`) dans une seule image, un seul port : `http://127.0.0.1:8090` (`SUPERVISION_PORT`, `ADMIN_BIND`). **Pas derrière le WAF** : la supervision ne doit pas être joignable par le trafic client.
-- **Lecture seule** : uniquement des `GET` (`/api/status`, `/api/history`). Il lit le canary (`/metrics`), la remédiation (`/v1/incidents`, avec `engine_token` côté serveur : le navigateur ne le voit jamais) et Prometheus (`query_range`).
-- **Honnêteté de l'état** : sans sonde fraîche (`PROBE_STALE_S`) ou si le canary est injoignable, le bandeau affiche « État inconnu », jamais « sain ». Si la supervision elle-même est coupée, la page l'affiche.
-- Dev du site : `cd supervision/ui && npm install && npm run dev` (port 5175, `/api` relayé vers `DEV_SUPERVISION_URL`).
-- Limite assumée : pas d'authentification (POC, accès local). Le token `engine_token` est monté dans ce service : le code n'appelle que des routes de lecture.
-
-## Tester le parcours de paiement
-
-Procédure complète (tests, parcours à la main, simulation d'incident) : [`doc/AUTH-FRONTEND.md`](../doc/AUTH-FRONTEND.md#comment-tester). `DEV_AUTH_URL` (défaut `http://localhost:8001`) règle la cible de `/auth` du serveur de dev.
-
-## Contrats portés par DEV
+Executors (`REMEDIATION_MODE`) : `ansible` (défaut ; alias `ssh`) lance `ansible-playbook remediation/<action>.yml -e service=…|ip=…` depuis `ANSIBLE_WORKDIR` (`/work`), succès = code 0 **et** « SERVICE RÉTABLI » dans la sortie ; `local` : docker-proxy (`restart`/`recreate` = redémarrage) et `blocklist.txt` du WAF, `isolate`/`restore_db`/`rollback_vm` refusés. Test local : `REMEDIATION_MODE=local ALERT_WEBHOOK_TOKEN=… CANARY_URL=…` puis `curl -H "Authorization: Bearer …" -d '{"alerts":[{"status":"firing","labels":{"remediation":"restart","service":"api"}}]}' localhost:8000/api/v1/alerts`.
 
 - **JWT** émis par `auth`, lu par `api` : contrat dans [`api/README.md`](api/README.md#contrat-avec-auth).
-- **`remediation`** : interfaces (a) et (b) dans [ARCHITECTURE](../doc/ARCHITECTURE.md). Deux executors (`local`, `ssh`) derrière la même interface, choisis par `REMEDIATION_MODE`.
+- **`remediation`** : entrée webhook Alertmanager et interface (b) dans [ARCHITECTURE](../doc/ARCHITECTURE.md). Deux executors (`local`, `ansible`) derrière la même interface, choisis par `REMEDIATION_MODE`.
 - **`canary`** : `POST /verify` = transaction complète via le WAF + `GET /v1/ledger/check`.

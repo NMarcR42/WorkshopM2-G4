@@ -1,9 +1,8 @@
-"""Cerveau de la remédiation : choisit les actions dans une liste fermée et ne conclut qu'avec la preuve du canary.
+"""Cerveau de la remédiation : exécute l'action demandée par l'alerte, escalade si besoin, ne conclut qu'avec la preuve du canary.
 
 Principe : une action qui « réussit » ne prouve rien (le code retour dit que la commande est passée, pas que le
 service marche). Seul POST /verify du canary — un vrai paiement via le WAF — clôt l'incident.
 """
-import ipaddress
 import json
 import logging
 import threading
@@ -17,7 +16,11 @@ from . import observability as obs
 from .config import Settings
 from .executors import ActionError, run_and_record
 from .journal import Journal
-from .schemas import Signal
+from .schemas import RemediationRequest
+
+# Escalade si l'action demandée ne suffit pas (du moins au plus intrusif). rollback_vm n'y figure pas : trop destructeur
+# pour être déclenché sans qu'une alerte le demande explicitement.
+ESCALATION = {"block_ip": ("restart", "recreate"), "restart": ("recreate",)}
 
 
 class Engine:
@@ -29,13 +32,14 @@ class Engine:
         # IP bloquées -> date d'expiration. Persisté : un redémarrage du moteur ne doit pas débloquer l'attaquant.
         self._blocks_path = Path(s.incidents_dir) / "blocks.json"
         self.blocks: dict[str, float] = self._load_blocks()
+        self._last: dict[tuple[str, str], float] = {}  # (action, cible) -> instant du dernier lancement (anti-rebond)
 
-    # ---------- entrée (interface a) ----------
+    # ---------- entrée (webhook Alertmanager, voir alerts.py) ----------
 
-    def submit(self, signal: Signal) -> tuple[dict, bool]:
-        """Renvoie (incident, nouveau?). Dédoublonne : le détecteur continue de signaler pendant la réparation."""
+    def submit(self, req: RemediationRequest) -> tuple[dict | None, bool]:
+        """Renvoie (incident, nouveau?). Dédoublonne : Alertmanager répète l'alerte pendant la réparation."""
         with self.lock:
-            same = self.journal.by_anomaly(signal.anomaly_id)
+            same = self.journal.by_anomaly(req.anomaly_id)
             if same:
                 return same, False
             active = self.journal.active()
@@ -44,19 +48,25 @@ class Engine:
             last = next(iter(self.journal.recent(1)), None)
             if last and last["status"] == "RESOLVED" and self._age_s(last["ended_at"]) < self.s.cooldown_s:
                 return last, False
-            inc = self.journal.create(signal.model_dump(mode="json"))
+            key = (req.action, req.target)
+            stamp = self._last.get(key)
+            if stamp is not None and time.monotonic() - stamp < self.s.action_cooldown_s:
+                obs.event("ignore_cooldown", alert=req.alertname, action=req.action, target=req.target)
+                return last, False
+            self._last[key] = time.monotonic()
+            inc = self.journal.create(req.as_signal())
             obs.ACTIVE.inc()
-        obs.event("incident_opened", incident_id=inc["id"], target=signal.target_service, score=signal.score)
-        threading.Thread(target=self._handle, args=(inc, signal), daemon=True).start()
+        obs.event("incident_opened", incident_id=inc["id"], alert=req.alertname, action=req.action, target=req.target)
+        threading.Thread(target=self._handle, args=(inc, req), daemon=True).start()
         return inc, True
 
     # ---------- traitement ----------
 
-    def _handle(self, inc: dict, signal: Signal) -> None:
+    def _handle(self, inc: dict, req: RemediationRequest) -> None:
         started = time.monotonic()
         status, by = "UNRESOLVED", None
         try:
-            status, by = self._remediate(inc, signal)
+            status, by = self._remediate(inc, req)
         except Exception as exc:  # un bug du moteur ne doit jamais laisser un incident « en cours » à vie
             self.journal.add(inc, "engine_error", detail=type(exc).__name__)
             obs.event("engine_error", logging.ERROR, incident_id=inc["id"], error=repr(exc))
@@ -69,21 +79,16 @@ class Engine:
             obs.event("incident_closed", incident_id=inc["id"], status=status, resolved_by=by,
                       duration_s=round(time.monotonic() - started, 1))
 
-    def _remediate(self, inc: dict, signal: Signal) -> tuple[str, str | None]:
-        ips = self._blockable_ips(signal)
-
-        # Garde anti faux positif : service sain et personne à bloquer -> on ne touche à rien.
-        if not ips:
+    def _remediate(self, inc: dict, req: RemediationRequest) -> tuple[str, str | None]:
+        # Garde anti faux positif : décision « auto » du ML, rien à bloquer et service sain -> on ne touche à rien.
+        if req.auto and req.action != "block_ip" and self.s.auto_verify_first:
             ok, _ = self._verify(inc)
             if ok:
                 return "RESOLVED", "none"
 
-        # Escalade : du moins au plus intrusif. On s'arrête dès que le canary prouve la reprise.
-        plan = []
-        if ips:
-            plan.append(("block_source", {"block_ips": self._add_blocks(ips), "block_ttl_s": self.s.block_ttl_s}))
-        plan.append(("restart_service", {"target_service": signal.target_service}))
-        plan.append(("rollback_service", {"target_service": signal.target_service}))
+        # L'action demandée par l'alerte d'abord, puis escalade. On s'arrête dès que le canary prouve la reprise.
+        plan = [(req.action, self._params(req))]
+        plan += [(a, {"service": req.service}) for a in ESCALATION.get(req.action, ())]
 
         for action, params in plan:
             self.journal.add(inc, "action_started", action=action, params=params)
@@ -102,6 +107,11 @@ class Engine:
         # Plus rien à tenter automatiquement : on le dit clairement plutôt que de boucler.
         self.journal.add(inc, "escalated", detail="liste d'actions épuisée, intervention humaine requise")
         return "UNRESOLVED", None
+
+    def _params(self, req: RemediationRequest) -> dict:
+        if req.action == "block_ip":
+            return {"ip": req.ip, "block_ips": self._add_blocks([req.ip]), "block_ttl_s": self.s.block_ttl_s}
+        return {"service": req.service}
 
     # ---------- vérification (preuve de reprise) ----------
 
@@ -128,23 +138,6 @@ class Engine:
 
     # ---------- liste de blocage ----------
 
-    def _blockable_ips(self, signal: Signal) -> list[str]:
-        """IP à bloquer : assez de trafic, valide, hors réseaux protégés, en nombre borné."""
-        out: list[str] = []
-        for sus in sorted(signal.suspects, key=lambda x: x.share, reverse=True):
-            if sus.share < self.s.block_min_share:
-                continue
-            try:
-                ip = ipaddress.ip_address(sus.value)
-            except ValueError:
-                obs.event("suspect_ignored", logging.WARNING, value=sus.value[:64], reason="IP invalide")
-                continue
-            if any(ip in net for net in self.s.protected_cidrs):
-                obs.event("suspect_ignored", logging.WARNING, value=str(ip), reason="réseau protégé")
-                continue
-            out.append(str(ip))
-        return out[: self.s.max_block_ips]
-
     def _add_blocks(self, ips: list[str]) -> list[str]:
         with self.lock:
             expiry = time.time() + self.s.block_ttl_s
@@ -164,10 +157,10 @@ class Engine:
             self._save_blocks()
             remaining = sorted(self.blocks)
         try:
-            self.executor.run("block_source", "expiry", {"block_ips": remaining, "block_ttl_s": self.s.block_ttl_s})
+            self.executor.unblock(gone, remaining)
             obs.event("blocks_expired", ips=gone, remaining=len(remaining))
         except ActionError as exc:
-            obs.event("action_failed", logging.WARNING, action="block_source", error=str(exc), reason="expiry")
+            obs.event("action_failed", logging.WARNING, action="unblock", error=str(exc), reason="expiry")
 
     def _load_blocks(self) -> dict[str, float]:
         try:

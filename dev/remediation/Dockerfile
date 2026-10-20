@@ -1,4 +1,7 @@
-FROM python:3.12-slim
+# VM-OPS : --build-arg BASE_IMAGE=ra/remediation-runner (Ansible, community.proxmox et client SSH déjà dedans).
+# Local / CI : python:3.12-slim, éventuellement avec WITH_ANSIBLE=1 (ancien mode ssh).
+ARG BASE_IMAGE=python:3.12-slim
+FROM ${BASE_IMAGE}
 
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 WORKDIR /srv
@@ -6,7 +9,7 @@ WORKDIR /srv
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Ansible (lourd) n'est installe que pour le mode ssh : remediation-ssh.yml passe WITH_ANSIBLE=1.
+# Inutile avec ra/remediation-runner. Sur l'image Python seule, WITH_ANSIBLE=1 ajoute Ansible (remediation-ssh.yml).
 ARG WITH_ANSIBLE=0
 RUN if [ "$WITH_ANSIBLE" = "1" ]; then \
       apt-get update && apt-get install -y --no-install-recommends openssh-client \
@@ -16,6 +19,7 @@ RUN if [ "$WITH_ANSIBLE" = "1" ]; then \
 COPY app ./app
 # Le journal d'incidents est un volume : le dossier doit appartenir a l'utilisateur non-root.
 # Idem pour la liste de blocage partagee avec le WAF (mode local).
+# /work (playbooks) et les cles sont montes en lecture seule par le compose de l'infra, pas copies dans l'image.
 RUN useradd --system --no-create-home remediation \
     && mkdir -p /var/lib/resilience/incidents /etc/waf/blocklist \
     && chown remediation /var/lib/resilience/incidents /etc/waf/blocklist
