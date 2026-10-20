@@ -1,0 +1,14 @@
+# HashiCorp Vault — mode serveur, stockage fichier (géré par Ansible)
+# Limite assumée du prototype : pas de TLS ; seul vm-app est autorisé sur :8200 (pare-feu Proxmox).
+storage "file" {
+  path = "/vault/file"
+}
+
+listener "tcp" {
+  address     = "0.0.0.0:8200"
+  tls_disable = 1
+}
+
+api_addr      = "http://{{ vm_ips.ops }}:8200"
+disable_mlock = true
+ui            = false

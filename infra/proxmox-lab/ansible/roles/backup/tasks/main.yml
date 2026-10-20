@@ -1,0 +1,79 @@
+# Sauvegardes PostgreSQL : dump toutes les 5 min sur vm-app, copie en écriture seule vers vm-sauv
+- name: "[app] Clé SSH de sauvegarde"
+  community.crypto.openssh_keypair:
+    path: /root/.ssh/backup_ed25519
+    type: ed25519
+    comment: backup@vm-app
+  when: inventory_hostname in groups['app']
+
+- name: "[app] Lecture de la clé publique"
+  ansible.builtin.slurp:
+    src: /root/.ssh/backup_ed25519.pub
+  register: backup_pub
+  when: inventory_hostname in groups['app']
+
+- name: "[sauv] Compte de réception des sauvegardes"
+  ansible.builtin.user:
+    name: backup-recv
+    home: /srv/backups
+    shell: /bin/sh
+    create_home: true
+  when: inventory_hostname in groups['sauv']
+
+- name: "[sauv] Dossier de réception"
+  ansible.builtin.file:
+    path: /srv/backups/vm-app
+    state: directory
+    owner: backup-recv
+    mode: "0700"
+  when: inventory_hostname in groups['sauv']
+
+- name: "[sauv] Clé autorisée : écriture seule, sans suppression (protection anti-rançongiciel)"
+  ansible.posix.authorized_key:
+    user: backup-recv
+    key: "{{ hostvars[groups['app'][0]].backup_pub.content | b64decode }}"
+    key_options: 'restrict,from="{{ vm_ips.app }}",command="/usr/bin/rrsync -wo -no-del /srv/backups/vm-app"'
+    exclusive: true
+  when: inventory_hostname in groups['sauv']
+
+- name: "[app] Scripts de sauvegarde et de restauration"
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/usr/local/sbin/{{ item }}"
+    mode: "0750"
+  loop: [ra-backup-db, ra-restore-db]
+  when: inventory_hostname in groups['app']
+
+- name: "[app] Service et minuteur systemd"
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.name }}"
+    mode: "0644"
+    content: "{{ item.content }}"
+  loop:
+    - name: ra-backup-db.service
+      content: |
+        [Unit]
+        Description=Sauvegarde PostgreSQL Resilience-Alpha
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/ra-backup-db
+    - name: ra-backup-db.timer
+      content: |
+        [Unit]
+        Description=Sauvegarde PostgreSQL toutes les {{ backup_interval }}
+        [Timer]
+        OnBootSec=2min
+        OnUnitActiveSec={{ backup_interval }}
+        [Install]
+        WantedBy=timers.target
+  loop_control:
+    label: "{{ item.name }}"
+  when: inventory_hostname in groups['app']
+
+- name: "[app] Activation du minuteur"
+  ansible.builtin.systemd_service:
+    name: ra-backup-db.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: inventory_hostname in groups['app']

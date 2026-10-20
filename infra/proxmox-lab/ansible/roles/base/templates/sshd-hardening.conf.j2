@@ -1,0 +1,10 @@
+# Géré par Ansible (rôle base)
+PermitRootLogin no
+PasswordAuthentication {{ 'no' if ssh_disable_password_auth else 'yes' }}
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+X11Forwarding no
+AllowAgentForwarding no
+MaxAuthTries 3
+LoginGraceTime 30
+ClientAliveInterval 300

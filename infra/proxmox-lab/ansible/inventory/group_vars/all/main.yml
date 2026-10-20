@@ -1,0 +1,118 @@
+# Variables globales — PROJECT RESILIENCE-ALPHA
+project_name: resilience-alpha
+base_dir: /opt/resilience
+timezone: Europe/Paris
+
+# ---------------------------------------------------------------- Réseau LAN (vmbr0)
+lan_prefix: 24
+lan_gateway: 192.168.1.254
+lan_dns: [192.168.1.254, 1.1.1.1]
+set_static_ip: true      # fixe l'IP actuelle (DHCP -> statique), appliqué au prochain redémarrage
+disable_ipv6: true       # la Freebox distribue de l'IPv6 public : on le coupe pour ne rien exposer
+
+vm_ips:
+  app: 192.168.1.24
+  obs: 192.168.1.142
+  ops: 192.168.1.151
+  ia: 192.168.1.152
+  sauv: 192.168.1.9
+
+# Postes d'administration — décision équipe 19/10 : accès ouvert à tous pendant le workshop
+# (pare-feu Proxmox non appliqué ; liste conservée pour la recommandation industrielle)
+admin_sources:
+  - 192.168.27.0/24      # tunnel WireGuard
+# - 192.168.1.10         # PC Hôte (carte Ethernet côté Proxmox) — à compléter
+
+# ---------------------------------------------------------------- SSH
+ssh_admin_keys:
+  - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIElkJ1vo6jtMWvQckSmcIUbqhjDmZDHMS88TUn1CkhCk papis@pc
+  - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDQxHiR+W4sFO/Oz7JRSNgFKxfy3MFgr8wbhu/6qw2ML ansible@vm-ops
+# Passer à true quand les clés de toute l'équipe sont dans ssh_admin_keys
+ssh_disable_password_auth: false
+
+# ---------------------------------------------------------------- Images (versions figées)
+images:
+  prometheus: prom/prometheus:v3.5.0
+  alertmanager: prom/alertmanager:v0.28.1
+  loki: grafana/loki:3.5.3
+  grafana: grafana/grafana:12.1.1
+  alloy: grafana/alloy:v1.10.2
+  node_exporter: prom/node-exporter:v1.9.1
+  cadvisor: gcr.io/cadvisor/cadvisor:v0.52.1
+  blackbox: prom/blackbox-exporter:v0.27.0
+  postgres: postgres:17-alpine
+  postgres_exporter: prometheuscommunity/postgres-exporter:v0.17.1
+  vault: hashicorp/vault:1.20.2
+  bunkerweb: bunkerity/bunkerweb:1.6.16
+  bunkerweb_scheduler: bunkerity/bunkerweb-scheduler:1.6.16
+  bunkerweb_ui: bunkerity/bunkerweb-ui:1.6.16
+  nginx: nginx:1.28-alpine
+  ollama: ollama/ollama:latest
+  curl: curlimages/curl:8.23.0
+
+# Images applicatives : traefik/whoami sert de bouchon tant que le dev n'a pas livré
+app_images:
+  frontend: traefik/whoami:v1.11.0
+  api: traefik/whoami:v1.11.0
+  auth: traefik/whoami:v1.11.0
+app_ports:            # port d'écoute HTTP interne de chaque service (schéma réseau v2)
+  frontend: 8080      # React
+  api: 8000           # FastAPI
+  auth: 8001          # service d'authentification (JWT)
+app_placeholder: true # true tant que les images du dev sont des bouchons traefik/whoami
+
+db_name: payments
+db_user: payments
+
+# ---------------------------------------------------------------- Observabilité
+prometheus_retention: 7d
+prometheus_scrape_interval: 5s     # 5 s pour une détection rapide pendant la démo
+prometheus_eval_interval: 5s       # les règles d'alerte sont évaluées au même rythme
+loki_retention: 168h
+# WAF en HTTPS (certificat auto-signé du conteneur) — LAN pour les sondes, DMZ pour l'extérieur
+waf_dmz_ip: 192.168.10.24
+waf_dmz_enabled: false    # true quand vm-app a sa 2e carte (eth1) dans la DMZ pfSense
+waf_server_names: [192.168.1.24, 192.168.10.24, 192.168.137.2, pay.resilience.lab]
+bw_api_subnet: 10.20.30.0/24       # réseau interne instance <-> scheduler BunkerWeb
+bw_bad_behavior_threshold: 10
+bw_limit_req_rate: 20r/s
+bw_admin_user: admin
+bw_admin_password: "{{ _secrets.bw_admin_password | default('') }}"
+bw_ui_port: 7000                   # UI BunkerWeb, publiée sur le LAN de vm-app
+bw_db_uri: "sqlite:////data/db.sqlite3"   # base partagée scheduler <-> UI
+probe_base_url: "https://{{ vm_ips.app }}"
+http_probes:
+  - { service: frontend, path: / }
+  - { service: api, path: /api/health }
+  - { service: auth, path: /auth/health }
+synthetic_probe_enabled: false             # true quand le dev a livré l'endpoint
+synthetic_probe_path: /api/synthetic/transaction
+remediation_webhook_url: "http://{{ vm_ips.ops }}:8080/api/v1/alerts"
+ml_detector_port: 8500     # détecteur ML sur vm-ia, expose ra_anomaly_score sur /metrics
+
+# ---------------------------------------------------------------- Sauvegardes (RPO 5 min)
+backup_interval: 5min
+backup_keep: 288          # 24 h de dumps locaux
+
+# ---------------------------------------------------------------- Remédiation
+remediable_services: [waf, gateway, frontend, api, auth, postgres]
+remediation_uid: 10001
+proxmox_api_host: 192.168.1.89
+proxmox_node: pve
+
+# ---------------------------------------------------------------- IA
+ollama_models: []          # ex. ["qwen2.5:7b"] — choix de l'équipe IA (<= 8B)
+
+# ---------------------------------------------------------------- Secrets (SOPS + age)
+# Déchiffrés à la demande, uniquement quand une tâche les utilise.
+_secrets: "{{ lookup('community.sops.sops', inventory_dir ~ '/../secrets/secrets.sops.yml') | from_yaml }}"
+postgres_password: "{{ _secrets.postgres_password }}"
+grafana_admin_password: "{{ _secrets.grafana_admin_password }}"
+alert_webhook_token: "{{ _secrets.alert_webhook_token }}"
+synthetic_probe_token: "{{ _secrets.synthetic_probe_token }}"
+pve_remediation_token_id: "{{ _secrets.pve_remediation_token_id }}"
+pve_remediation_token_secret: "{{ _secrets.pve_remediation_token_secret }}"
+# Vault (descellement auto au démarrage) — présents une fois Vault initialisé
+vault_unseal_key: "{{ _secrets.vault_unseal_key | default('') }}"
+vault_root_token: "{{ _secrets.vault_root_token | default('') }}"
+vault_app_token: "{{ _secrets.vault_app_token | default('') }}"

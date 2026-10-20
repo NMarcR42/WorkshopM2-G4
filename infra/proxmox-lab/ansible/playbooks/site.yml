@@ -1,0 +1,51 @@
+# Déploiement complet et idempotent de la plateforme
+#   cd /opt/resilience/repo/ansible && ansible-playbook playbooks/site.yml
+- name: Socle système (toutes les VM)
+  hosts: all
+  become: true
+  roles: [base]
+
+- name: Docker Engine (toutes les VM)
+  hosts: all
+  become: true
+  roles: [docker]
+
+- name: Agents de collecte (toutes les VM)
+  hosts: all
+  become: true
+  roles: [agents]
+
+- name: Nœud de contrôle et exécuteur de remédiation
+  hosts: ops
+  become: true
+  roles: [ops]
+
+- name: Observabilité
+  hosts: obs
+  become: true
+  roles: [obs]
+
+- name: SI de paiement
+  hosts: app
+  become: true
+  roles: [app]
+
+- name: Assistant IA (Ollama)
+  hosts: ia
+  become: true
+  roles: [ia]
+
+- name: Sauvegardes
+  hosts: app:sauv
+  become: true
+  roles: [backup]
+
+- name: Accès restreint de la remédiation
+  hosts: app
+  become: true
+  roles: [remediation_access]
+
+- name: Générateur de trafic de fond (base d'apprentissage pour le ML)
+  hosts: ops
+  become: true
+  roles: [loadgen]

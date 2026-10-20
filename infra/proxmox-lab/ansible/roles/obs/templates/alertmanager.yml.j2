@@ -1,0 +1,31 @@
+# Alertmanager — vm-obs (géré par Ansible)
+# Toute alerte portant un label "remediation" (sauf none) est envoyée au moteur de remédiation.
+route:
+  receiver: journal
+  group_by: [alertname, service]
+  group_wait: 5s
+  group_interval: 30s
+  repeat_interval: 5m
+  routes:
+    - receiver: remediation
+      matchers:
+        - remediation=~".+"
+        - remediation!="none"
+
+receivers:
+  - name: journal        # alertes informatives : visibles dans Grafana, pas d'action
+  - name: remediation
+    webhook_configs:
+      - url: {{ remediation_webhook_url }}
+        send_resolved: true
+        max_alerts: 20
+        http_config:
+          authorization:
+            type: Bearer
+            credentials_file: /run/secrets/alert_webhook_token
+
+inhibit_rules:
+  # Si un service est down, inutile de remonter aussi sa latence
+  - source_matchers: [severity="critical"]
+    target_matchers: [severity="warning"]
+    equal: [service]

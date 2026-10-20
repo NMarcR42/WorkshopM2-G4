@@ -1,0 +1,32 @@
+#!/bin/sh
+# Trafic légitime vers le SI, via le WAF. Débit variable (jour/nuit simulé) pour donner
+# au modèle d'anomalie une base réaliste. Toutes les requêtes sont normales (HTTP 200).
+set -eu
+TARGET="https://{{ vm_ips.app }}"
+TOKEN="$(cat /run/secrets/synthetic_probe_token 2>/dev/null || echo '')"
+
+PATHS="/ /api/health /auth/health /api/accounts /api/transactions"
+i=0
+while true; do
+  i=$((i + 1))
+  # Onde lente : le débit respire entre ~1 et ~6 requêtes/s
+  phase=$(awk "BEGIN{print 3.5 + 2.5*sin($i/40.0)}")
+  # Quelques requêtes par cycle
+  n=$(awk "BEGIN{srand(); print int($phase + rand()*2)}")
+  k=0
+  while [ "$k" -lt "$n" ]; do
+    k=$((k + 1))
+    idx=$(awk "BEGIN{srand(); print int(rand()*5)+1}")
+    p=$(echo "$PATHS" | tr ' ' '\n' | sed -n "${idx}p")
+    [ -z "$p" ] && p="/"
+    curl -sk -o /dev/null --max-time 5 "$TARGET$p" || true
+    # 1 transaction fictive de temps en temps
+    if [ $(( i % 5 )) -eq 0 ] && [ "$k" -eq 1 ]; then
+      curl -sk -o /dev/null --max-time 6 -X POST "$TARGET{{ synthetic_probe_path }}" \
+        -H "Content-Type: application/json" \
+        ${TOKEN:+-H "Authorization: Bearer $TOKEN"} \
+        -d '{"amount": 12.50, "currency": "EUR", "label": "baseline"}' || true
+    fi
+  done
+  sleep 1
+done

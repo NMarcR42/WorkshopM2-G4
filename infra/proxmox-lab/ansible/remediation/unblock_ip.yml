@@ -1,0 +1,13 @@
+# Levée d'un blocage (fin d'incident, faux positif)
+# ansible-playbook unblock_ip.yml -e ip=192.168.137.42
+- name: Remédiation — déblocage de {{ ip }}
+  hosts: vm-app
+  gather_facts: false
+  tasks:
+    - name: Contrôle du paramètre
+      ansible.builtin.assert:
+        that: ip is defined and ip is match('^([0-9]{1,3}\.){3}[0-9]{1,3}$')
+
+    - name: Déblocage via la liste blanche
+      ansible.builtin.command: "sudo -n /usr/local/sbin/ra-remediate unblock-ip {{ ip }}"
+      changed_when: true

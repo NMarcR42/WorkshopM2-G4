@@ -1,0 +1,19 @@
+# Compromission d'un conteneur : preuves conservées, conteneur coupé du réseau,
+# remplacement par un conteneur neuf. (Différent d'un simple redémarrage.)
+# ansible-playbook isolate.yml -e service=api
+- name: Remédiation — isolement de {{ service }}
+  hosts: vm-app
+  gather_facts: false
+  tasks:
+    - name: Contrôle du paramètre
+      ansible.builtin.assert:
+        that: service is defined and service in remediable_services
+
+    - name: Isolement via la liste blanche
+      ansible.builtin.command: "sudo -n /usr/local/sbin/ra-remediate isolate {{ service }}"
+      changed_when: true
+
+    - name: Vérification
+      ansible.builtin.include_tasks: tasks/verify.yml
+      vars:
+        verify_service: "{{ service }}"

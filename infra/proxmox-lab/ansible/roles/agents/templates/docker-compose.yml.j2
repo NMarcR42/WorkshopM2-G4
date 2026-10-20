@@ -1,0 +1,61 @@
+# Agents de collecte — {{ inventory_hostname }} (géré par Ansible)
+name: agents
+
+services:
+  node-exporter:
+    image: {{ images.node_exporter }}
+    container_name: ra-node-exporter
+    command:
+      - --path.rootfs=/host
+      - --collector.textfile.directory=/host/var/lib/node_exporter/textfile
+    network_mode: host
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    restart: unless-stopped
+    mem_limit: 128m
+
+  cadvisor:
+    image: {{ images.cadvisor }}
+    container_name: ra-cadvisor
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=10s
+      - --store_container_labels=false
+      - --whitelisted_container_labels=com.docker.compose.service,com.docker.compose.project
+      - --disable_metrics=advtcp,cpu_topology,cpuset,hugetlb,memory_numa,percpu,perf_event,process,referenced_memory,resctrl,sched,tcp,udp
+    privileged: true
+    devices:
+      - /dev/kmsg
+    ports:
+      - "8081:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    restart: unless-stopped
+    mem_limit: 256m
+
+  alloy:
+    image: {{ images.alloy }}
+    container_name: ra-alloy
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    network_mode: host
+    volumes:
+      - ./config.alloy:/etc/alloy/config.alloy:ro
+      - alloy-data:/var/lib/alloy/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/log/journal:/var/log/journal:ro
+      - /run/log/journal:/run/log/journal:ro
+      - /etc/machine-id:/etc/machine-id:ro
+    restart: unless-stopped
+    mem_limit: 256m
+
+volumes:
+  alloy-data:

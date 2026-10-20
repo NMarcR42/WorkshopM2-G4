@@ -1,0 +1,114 @@
+# vm-ops : nœud de contrôle Ansible + exécuteur de remédiation
+- name: Outils du nœud de contrôle
+  ansible.builtin.apt:
+    name:
+      - ansible
+      - git
+      - age
+      - python3-proxmoxer
+      - python3-requests
+      - openssl
+    state: present
+
+- name: SOPS présent ?
+  ansible.builtin.stat:
+    path: /usr/bin/sops
+  register: sops_bin
+
+- name: SOPS (paquet officiel)
+  ansible.builtin.apt:
+    deb: "https://github.com/getsops/sops/releases/download/v{{ sops_version }}/sops_{{ sops_version }}_amd64.deb"
+  vars:
+    sops_version: 3.13.3
+  when: not sops_bin.stat.exists
+
+- name: Répertoires de la remédiation
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ base_dir }}/ops", owner: root, mode: "0755" }
+    - { path: "{{ base_dir }}/ops/keys", owner: "{{ remediation_uid }}", mode: "0700" }
+    - { path: "{{ base_dir }}/ops/runner", owner: root, mode: "0755" }
+    - { path: "{{ base_dir }}/ops/vault", owner: root, mode: "0755" }
+
+- name: Clé SSH dédiée à la remédiation (n'ouvre QUE le compte remediator de vm-app)
+  community.crypto.openssh_keypair:
+    path: "{{ base_dir }}/ops/keys/remediator_ed25519"
+    type: ed25519
+    comment: remediator@vm-ops
+    owner: "{{ remediation_uid }}"
+    mode: "0400"
+
+- name: Jeton API Proxmox restreint (rollback de snapshot de vm-app uniquement)
+  ansible.builtin.copy:
+    dest: "{{ base_dir }}/ops/keys/pve_token"
+    content: "{{ pve_remediation_token_id }}={{ pve_remediation_token_secret }}"
+    owner: "{{ remediation_uid }}"
+    mode: "0400"
+  no_log: true
+
+- name: Jetons du webhook Alertmanager et de la transaction de contrôle
+  ansible.builtin.copy:
+    dest: "{{ base_dir }}/ops/keys/{{ item.name }}"
+    content: "{{ item.value }}"
+    owner: "{{ remediation_uid }}"
+    mode: "0400"
+  loop:
+    - { name: alert_webhook_token, value: "{{ alert_webhook_token }}" }
+    - { name: synthetic_probe_token, value: "{{ synthetic_probe_token }}" }
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: Image de base de l'exécuteur de remédiation (Ansible sans accès Docker)
+  ansible.builtin.copy:
+    src: runner/Dockerfile
+    dest: "{{ base_dir }}/ops/runner/Dockerfile"
+    mode: "0644"
+  register: runner_df
+
+- name: Construction de l'image ra/remediation-runner
+  community.docker.docker_image_build:
+    name: ra/remediation-runner
+    tag: latest
+    path: "{{ base_dir }}/ops/runner"
+    rebuild: "{{ 'always' if runner_df.changed else 'never' }}"
+
+- name: Configuration de HashiCorp Vault
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ base_dir }}/ops/{{ item.dest }}"
+    mode: "0644"
+  loop:
+    - { src: vault.hcl.j2, dest: vault/vault.hcl }
+    - { src: docker-compose.yml.j2, dest: docker-compose.yml }
+
+- name: Démarrage de Vault (le moteur et le dashboard du dev s'ajouteront à cette stack)
+  community.docker.docker_compose_v2:
+    project_src: "{{ base_dir }}/ops"
+    state: present
+    pull: missing
+
+# Vault redémarre scellé : on le descelle automatiquement si la clé est connue (initialisé).
+- name: État de Vault
+  ansible.builtin.command: docker exec ra-vault vault status -format=json
+  environment: { VAULT_ADDR: "http://127.0.0.1:8200" }
+  register: vault_status
+  changed_when: false
+  failed_when: false
+  retries: 5
+  delay: 3
+  until: vault_status.rc in [0, 2]   # 0 = descellé, 2 = scellé
+
+- name: Descellement de Vault
+  ansible.builtin.command: "docker exec ra-vault vault operator unseal {{ vault_unseal_key }}"
+  environment: { VAULT_ADDR: "http://127.0.0.1:8200" }
+  no_log: true
+  changed_when: true
+  when:
+    - vault_status.rc == 2
+    - vault_unseal_key is defined
+    - vault_unseal_key | length > 0

@@ -1,0 +1,25 @@
+- name: Répertoires des agents
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ base_dir }}/agents"
+    - /var/lib/node_exporter/textfile
+
+- name: Fichiers de la stack agents
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ base_dir }}/agents/{{ item }}"
+    mode: "0644"
+  loop:
+    - docker-compose.yml
+    - config.alloy
+  register: agents_files
+
+- name: Démarrage de la stack agents
+  community.docker.docker_compose_v2:
+    project_src: "{{ base_dir }}/agents"
+    state: present
+    pull: missing
+    recreate: "{{ 'always' if agents_files.changed else 'auto' }}"

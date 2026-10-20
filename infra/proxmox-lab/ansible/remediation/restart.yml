@@ -1,0 +1,19 @@
+# Disponibilité : redémarrage ciblé d'un service puis vérification métier
+# ansible-playbook restart.yml -e service=api
+- name: Remédiation — redémarrage de {{ service }}
+  hosts: vm-app
+  gather_facts: false
+  tasks:
+    - name: Contrôle du paramètre
+      ansible.builtin.assert:
+        that: service is defined and service in remediable_services
+        fail_msg: "service doit être l'un de {{ remediable_services }}"
+
+    - name: Redémarrage via la liste blanche
+      ansible.builtin.command: "sudo -n /usr/local/sbin/ra-remediate restart {{ service }}"
+      changed_when: true
+
+    - name: Vérification
+      ansible.builtin.include_tasks: tasks/verify.yml
+      vars:
+        verify_service: "{{ service }}"

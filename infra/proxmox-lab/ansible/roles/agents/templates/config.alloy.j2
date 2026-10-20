@@ -1,0 +1,132 @@
+// Grafana Alloy — {{ inventory_hostname }} (géré par Ansible)
+// 1. logs des conteneurs Docker -> Loki
+// 2. journal systemd (ssh, sudo, ra-remediate, ra-backup) -> Loki
+// 3. métriques des conteneurs portant le label prometheus.scrape=true -> Prometheus (remote_write)
+
+logging {
+  level = "warn"
+}
+
+discovery.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "10s"
+}
+
+// ------------------------------------------------------------------ Logs Docker
+discovery.relabel "logs" {
+  targets = []
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    target_label  = "stack"
+  }
+}
+
+loki.source.docker "containers" {
+  host          = "unix:///var/run/docker.sock"
+  targets       = discovery.docker.containers.targets
+  labels        = { host = "{{ inventory_hostname }}", job = "docker" }
+  relabel_rules = discovery.relabel.logs.rules
+  forward_to    = [loki.write.obs.receiver]
+}
+
+// ------------------------------------------------------------------ Journal systemd
+loki.relabel "journal" {
+  forward_to = []
+
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "unit"
+  }
+  rule {
+    source_labels = ["__journal_syslog_identifier"]
+    target_label  = "syslog_identifier"
+  }
+  rule {
+    source_labels = ["__journal_priority_keyword"]
+    target_label  = "level"
+  }
+}
+
+loki.source.journal "journal" {
+  path          = "/var/log/journal"
+  max_age       = "12h"
+  relabel_rules = loki.relabel.journal.rules
+  labels        = { host = "{{ inventory_hostname }}", job = "journal" }
+  forward_to    = [loki.write.obs.receiver]
+}
+
+loki.write "obs" {
+  endpoint {
+    url = "http://{{ vm_ips.obs }}:3100/loki/api/v1/push"
+  }
+  external_labels = { platform = "{{ project_name }}" }
+}
+
+// ------------------------------------------------------------------ Métriques applicatives
+// Contrat : labels Docker prometheus.scrape=true, prometheus.port=<port>,
+//           prometheus.network=<réseau docker>, prometheus.path=/metrics (optionnel)
+discovery.relabel "metrics" {
+  targets = discovery.docker.containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_prometheus_scrape"]
+    regex         = "true"
+    action        = "keep"
+  }
+  rule {
+    source_labels = ["__meta_docker_port_private"]
+    target_label  = "__meta_docker_container_label_prometheus_port"
+    action        = "keepequal"
+  }
+  rule {
+    source_labels = ["__meta_docker_network_name"]
+    target_label  = "__meta_docker_container_label_prometheus_network"
+    action        = "keepequal"
+  }
+  rule {
+    source_labels = ["__meta_docker_network_ip", "__meta_docker_container_label_prometheus_port"]
+    separator     = ":"
+    target_label  = "__address__"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_prometheus_path"]
+    regex         = "(.+)"
+    target_label  = "__metrics_path__"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "instance"
+  }
+  rule {
+    target_label = "host"
+    replacement  = "{{ inventory_hostname }}"
+  }
+}
+
+prometheus.scrape "containers" {
+  targets         = discovery.relabel.metrics.output
+  job_name        = "containers"
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.obs.receiver]
+}
+
+prometheus.remote_write "obs" {
+  endpoint {
+    url = "http://{{ vm_ips.obs }}:9090/api/v1/write"
+  }
+}

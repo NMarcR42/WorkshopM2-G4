@@ -1,0 +1,11 @@
+# Secrets en clair : jamais dans Git
+*.dec
+*.dec.yml
+**/keys.txt
+**/*.key
+**/*_ed25519
+**/secrets/*.txt
+ansible/secrets/secrets.yml
+.env
+*.retry
+__pycache__/
