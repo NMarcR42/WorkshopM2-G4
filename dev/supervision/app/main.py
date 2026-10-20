@@ -114,6 +114,70 @@ def global_state(probe: dict, incidents: list[dict] | None) -> str:
     return "HEALTHY"
 
 
+def _alert_row(labels: dict, starts_at: str | None) -> dict:
+    return {"name": labels.get("alertname", "?"), "severity": labels.get("severity"), "service": labels.get("service"),
+            "remediation": labels.get("remediation"), "starts_at": starts_at}
+
+
+def read_alerts() -> dict:
+    """Alertes qui brûlent. Alertmanager d'abord ; s'il est absent ou muet, repli sur ALERTS{alertstate="firing"} de
+    Prometheus : même information (sans les alertes silencées), et le dashboard ne dépend pas d'un seul composant."""
+    if settings.alertmanager_url:
+        try:
+            r = httpx.get(f"{settings.alertmanager_url}/api/v2/alerts", timeout=settings.timeout_s,
+                          params={"active": "true", "silenced": "false", "inhibited": "false"})
+            r.raise_for_status()
+            return {"source": "alertmanager", "reachable": True,
+                    "alerts": [_alert_row(a.get("labels", {}), a.get("startsAt")) for a in r.json()]}
+        except (httpx.HTTPError, ValueError, AttributeError):
+            pass
+    if settings.prometheus_url:
+        try:
+            r = httpx.get(f"{settings.prometheus_url}/api/v1/query", timeout=settings.timeout_s,
+                          params={"query": 'ALERTS{alertstate="firing"}'})
+            r.raise_for_status()
+            return {"source": "prometheus", "reachable": True,
+                    "alerts": [_alert_row(s.get("metric", {}), None) for s in r.json()["data"]["result"]]}
+        except (httpx.HTTPError, ValueError, KeyError):
+            pass
+    return {"source": None, "reachable": False, "alerts": []}
+
+
+def _remediation_selector() -> str | None:
+    key, _, value = settings.loki_remediation_label.partition("=")
+    # Construit ici, avec des caractères contrôlés : rien d'autre qu'un sélecteur à une étiquette n'atteint Loki.
+    if not (key.isidentifier() and value and '"' not in value and "\\" not in value):
+        return None
+    return '{' + f'{key}="{value}"' + '}'
+
+
+def read_remediation_log(minutes: int, limit: int) -> dict:
+    """Dernières lignes du journal de remédiation (Loki). Absent ou injoignable : liste vide, jamais une erreur."""
+    selector = _remediation_selector()
+    if not (settings.loki_url and selector):
+        return {"configured": False, "reachable": False, "lines": []}
+    end = time.time()
+    try:
+        r = httpx.get(f"{settings.loki_url}/loki/api/v1/query_range", timeout=settings.timeout_s, params={
+            "query": selector, "limit": limit, "direction": "backward",
+            "start": int((end - minutes * 60) * 1e9), "end": int(end * 1e9)})
+        r.raise_for_status()
+        rows = [(int(ts), line) for stream in r.json()["data"]["result"] for ts, line in stream["values"]]
+    except (httpx.HTTPError, ValueError, KeyError):
+        return {"configured": True, "reachable": False, "lines": []}
+    rows.sort(reverse=True)
+    lines = []
+    for ts, line in rows[:limit]:
+        try:  # logs JSON du moteur : on en tire le message ; sinon (journal systemd) la ligne brute fait foi
+            parsed = json.loads(line)
+            event = (parsed.get("msg") or parsed.get("event")) if isinstance(parsed, dict) else None
+        except ValueError:
+            event = None
+        lines.append({"ts": datetime.fromtimestamp(ts / 1e9, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                      "event": event, "line": line[:300]})
+    return {"configured": True, "reachable": True, "lines": lines}
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -134,6 +198,16 @@ def status() -> dict:
         "incidents": incidents or [],
         "now": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+
+
+@app.get("/api/alerts")
+def alerts() -> dict:
+    return read_alerts()
+
+
+@app.get("/api/remediation-log")
+def remediation_log(minutes: int = Query(15, ge=1, le=120), limit: int = Query(30, ge=1, le=100)) -> dict:
+    return read_remediation_log(minutes, limit)
 
 
 @app.get("/api/history")

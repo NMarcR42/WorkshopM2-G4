@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { getHistory, getStatus } from './api.js'
+import { getAlerts, getHistory, getRemediationLog, getStatus } from './api.js'
 import Chart from './Chart.jsx'
 import { ACTIONS, IncidentDetail, IncidentTable } from './Incidents.jsx'
 
@@ -31,6 +31,9 @@ export default function App() {
   const [status, setStatus] = useState(null)
   const [history, setHistory] = useState(null)
   const [offline, setOffline] = useState(false)
+  // Sources de l'infra (Alertmanager, Loki) : optionnelles. Leur absence se lit dans le panneau, elle ne fige pas la page.
+  const [alerts, setAlerts] = useState(null)
+  const [rlog, setRlog] = useState(null)
   const [selected, setSelected] = useState(null)
 
   useEffect(() => {
@@ -45,10 +48,15 @@ export default function App() {
     }
     const tick = () => load(getStatus, setStatus)
     const tickH = () => load(() => getHistory(HISTORY_MIN), setHistory)
-    tick(); tickH()
+    const tickX = () => {
+      getAlerts().then((d) => alive && setAlerts(d)).catch(() => alive && setAlerts(null))
+      getRemediationLog().then((d) => alive && setRlog(d)).catch(() => alive && setRlog(null))
+    }
+    tick(); tickH(); tickX()
     const a = setInterval(tick, 2000)
     const b = setInterval(tickH, 5000)
-    return () => { alive = false; clearInterval(a); clearInterval(b) }
+    const c = setInterval(tickX, 5000)
+    return () => { alive = false; clearInterval(a); clearInterval(b); clearInterval(c) }
   }, [])
 
   if (!status) {
@@ -108,6 +116,39 @@ export default function App() {
         <div>
           <h2 className="mb-2 text-sm font-semibold uppercase text-slate-400">Chronologie de l’incident</h2>
           <IncidentDetail incident={detail} />
+        </div>
+      </section>
+
+      <section className="mt-5 grid gap-5 md:grid-cols-2">
+        <div>
+          <h2 className="mb-2 text-sm font-semibold uppercase text-slate-400">Alertes en cours</h2>
+          {!alerts?.reachable ? <p className="text-sm text-slate-500">Source d’alertes indisponible.</p>
+            : alerts.alerts.length === 0 ? <p className="text-sm text-slate-500">Aucune alerte.</p>
+              : (
+                <ul className="space-y-1 text-sm">
+                  {alerts.alerts.map((a, i) => (
+                    <li key={i} className="rounded border border-slate-800 bg-slate-900/60 px-3 py-1.5">
+                      <span className="font-medium text-amber-300">{a.name}</span>
+                      <span className="text-slate-500">{[a.service, a.severity, a.remediation].filter(Boolean).map((x) => ` · ${x}`)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+        </div>
+        <div>
+          <h2 className="mb-2 text-sm font-semibold uppercase text-slate-400">Journal de remédiation</h2>
+          {!rlog?.configured ? <p className="text-sm text-slate-500">Journal non configuré.</p>
+            : !rlog.reachable ? <p className="text-sm text-slate-500">Journal injoignable.</p>
+              : rlog.lines.length === 0 ? <p className="text-sm text-slate-500">Aucune entrée récente.</p>
+                : (
+                  <ul className="max-h-64 space-y-1 overflow-y-auto font-mono text-xs text-slate-300">
+                    {rlog.lines.map((l, i) => (
+                      <li key={i} className="truncate" title={l.line}>
+                        <span className="text-slate-500">{new Date(l.ts).toLocaleTimeString('fr-FR')} </span>{l.event ?? l.line}
+                      </li>
+                    ))}
+                  </ul>
+                )}
         </div>
       </section>
     </main>

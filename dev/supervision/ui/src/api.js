@@ -9,4 +9,6 @@ async function get(path) {
 }
 
 export const getStatus = () => get('/status')
+export const getAlerts = () => get('/alerts')
+export const getRemediationLog = () => get('/remediation-log')
 export const getHistory = (minutes) => get(`/history?minutes=${minutes}`)

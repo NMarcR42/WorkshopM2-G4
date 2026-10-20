@@ -5,9 +5,12 @@ const STATUS = {
 }
 
 const ACTIONS = {
-  block_source: 'Blocage de l’IP source',
-  restart_service: 'Redémarrage du service',
-  rollback_service: 'Retour arrière du service',
+  block_ip: 'Blocage de l’IP source',
+  restart: 'Redémarrage du service',
+  recreate: 'Recréation du service',
+  isolate: 'Isolement du service',
+  restore_db: 'Restauration de la base',
+  rollback_vm: 'Retour arrière de la VM',
   none: 'Aucune (faux positif écarté)',
 }
 

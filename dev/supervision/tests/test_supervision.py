@@ -67,3 +67,75 @@ def test_historique_ignore_les_nan(monkeypatch):
 def test_lecture_seule():
     assert client.post("/api/status").status_code in (404, 405)
     assert client.get("/health").status_code == 200
+
+
+# ---------- sources de l'infra : Alertmanager et Loki ----------
+
+class Resp:
+    def __init__(self, data):
+        self.data = data
+
+    def raise_for_status(self): ...
+    def json(self):
+        return self.data
+
+
+def with_settings(monkeypatch, **kw):
+    import dataclasses
+    monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, **kw))
+
+
+def test_alertes_lues_sur_alertmanager(monkeypatch):
+    with_settings(monkeypatch, alertmanager_url="http://am:9093", prometheus_url="http://prom:9090")
+    monkeypatch.setattr(main.httpx, "get", lambda url, **k: Resp(
+        [{"labels": {"alertname": "AnomalieDetecteeML", "service": "api", "remediation": "auto"}, "startsAt": "2026-01-01T00:00:00Z"}]))
+    body = client.get("/api/alerts").json()
+    assert body["source"] == "alertmanager" and body["alerts"][0]["name"] == "AnomalieDetecteeML"
+
+
+def test_alertes_repli_sur_prometheus_si_alertmanager_tombe(monkeypatch):
+    with_settings(monkeypatch, alertmanager_url="http://am:9093", prometheus_url="http://prom:9090")
+
+    def get(url, **k):
+        if "9093" in url:
+            raise httpx.ConnectError("refus")
+        assert k["params"]["query"] == 'ALERTS{alertstate="firing"}'
+        return Resp({"data": {"result": [{"metric": {"alertname": "ApiDown", "alertstate": "firing"}}]}})
+
+    monkeypatch.setattr(main.httpx, "get", get)
+    body = client.get("/api/alerts").json()
+    assert body["source"] == "prometheus" and body["alerts"][0]["name"] == "ApiDown"
+
+
+def test_alertes_aucune_source_ne_plante_pas(monkeypatch):
+    with_settings(monkeypatch, alertmanager_url="", prometheus_url="")
+    assert client.get("/api/alerts").json() == {"source": None, "reachable": False, "alerts": []}
+
+
+def test_journal_de_remediation_loki(monkeypatch):
+    with_settings(monkeypatch, loki_url="http://loki:3100", loki_remediation_label="syslog_identifier=ra-remediate")
+    seen = {}
+
+    def get(url, **k):
+        seen.update(k["params"])
+        return Resp({"data": {"result": [{"values": [["1700000000000000000", '{"msg":"action_done"}'],
+                                                     ["1700000005000000000", "ligne systemd brute"]]}]}})
+
+    monkeypatch.setattr(main.httpx, "get", get)
+    body = client.get("/api/remediation-log").json()
+    assert seen["query"] == '{syslog_identifier="ra-remediate"}'
+    assert [x["event"] for x in body["lines"]] == [None, "action_done"]  # plus récent d'abord
+
+
+def test_journal_non_configure_ou_loki_tombe(monkeypatch):
+    with_settings(monkeypatch, loki_url="", loki_remediation_label="")
+    assert client.get("/api/remediation-log").json()["configured"] is False
+    with_settings(monkeypatch, loki_url="http://loki:3100", loki_remediation_label="service=remediation")
+    monkeypatch.setattr(main.httpx, "get", lambda *a, **k: (_ for _ in ()).throw(httpx.ConnectError("refus")))
+    body = client.get("/api/remediation-log").json()
+    assert body["configured"] and not body["reachable"] and body["lines"] == []
+
+
+def test_etiquette_loki_invalide_refusee(monkeypatch):
+    with_settings(monkeypatch, loki_url="http://loki:3100", loki_remediation_label='service=x"} or {job=~".+"')
+    assert client.get("/api/remediation-log").json()["configured"] is False

@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 
 umask 077
 mkdir -p .secrets
-for key in db_password jwt_secret engine_token grafana_admin_password canary_password synthetic_probe_token; do
+for key in db_password jwt_secret engine_token grafana_admin_password canary_password synthetic_probe_token alert_webhook_token; do
   if [ ! -s ".secrets/$key" ]; then
     head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32 > ".secrets/$key"
     echo "secret genere : .secrets/$key"
