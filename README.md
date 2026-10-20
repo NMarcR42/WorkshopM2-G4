@@ -18,7 +18,7 @@ Prérequis : Docker + Compose v2, Git, un shell bash (Git Bash sous Windows).
 
 `compose.sh` est `docker compose` avec les bons fichiers, choisis par `ROLES` et `REMEDIATION_MODE` dans `.env`. Si le port 8000 est pris : `API_PORT=18000` dans `.env`.
 
-> Seuls `db` et `api` existent pour l'instant (voir la roadmap) : `up --build` échoue sur les autres, qui n'ont pas encore de code. En attendant : `./scripts/compose.sh up -d --build db api`.
+> Seuls `db`, `api`, `auth`, `frontend`, `canary`, `remediation` et `supervision` existent pour l'instant (voir la roadmap) : `up --build` échoue sur les autres, qui n'ont pas encore de code. En attendant : `./scripts/compose.sh up -d --build db api auth frontend`, puis [tester le parcours de paiement](doc/AUTH-FRONTEND.md#comment-tester).
 
 Multi-machines, secrets partagés (SOPS), mode de remédiation `ssh` : voir [`doc/ARCHITECTURE.md`](doc/ARCHITECTURE.md) et [`cyber/README.md`](cyber/README.md).
 
@@ -27,6 +27,7 @@ Multi-machines, secrets partagés (SOPS), mode de remédiation `ssh` : voir [`do
 | Quoi | Adresse | Exposition |
 |---|---|---|
 | Plateforme (via le WAF) | `http://<ip-hôte>:8080` | réseau — seul point d'entrée |
+| Supervision (vue du jury) | `http://127.0.0.1:8090` | local (`ADMIN_BIND`) |
 | Grafana | `http://127.0.0.1:3000` | local (`ADMIN_BIND`) |
 | Assistant RAG | `http://127.0.0.1:8501` | local (`ADMIN_BIND`) |
 
@@ -36,7 +37,7 @@ Base de données, remédiation et secrets ne sont jamais publiés.
 
 | Dossier | Domaine | Contenu |
 |---|---|---|
-| [`dev/`](dev/README.md) | DEV | `api` (fait), `auth`, `canary`, `remediation`, `frontend` |
+| [`dev/`](dev/README.md) | DEV | `api`, `auth`, `frontend`, `canary`, `remediation`, `supervision` (faits) |
 | [`ia/`](ia/README.md) | IA | `detector` (ML), `assistant` (RAG) |
 | [`cyber/`](cyber/README.md) | CYBER | `waf`, `attack`, secrets |
 | [`infra/`](infra/README.md) | INFRA | `compose/`, `ansible/`, `monitoring/` |
@@ -52,6 +53,7 @@ Un dossier de service n'existe que lorsqu'il contient du code.
 | [`doc/ROADMAP.md`](doc/ROADMAP.md) | Pilotage : qui fait quoi, jour par jour, cœur vs bonus |
 | [`doc/ARCHITECTURE.md`](doc/ARCHITECTURE.md) | Services, boucle de reprise, contrats entre domaines, modes de déploiement, sécurité |
 | [`doc/STACK.md`](doc/STACK.md) | Contraintes du sujet et rôle de chaque outil chez nous |
+| [`doc/AUTH-FRONTEND.md`](doc/AUTH-FRONTEND.md) | Fiche auth + frontend : ce qui est fait, comment le tester, ce qui reste |
 | [`doc/GITHUB.md`](doc/GITHUB.md) | Règles de branches / PR et commandes Git |
 | [`doc/CONCEPTS.md`](doc/CONCEPTS.md) | Glossaire |
 | [`CLAUDE.md`](CLAUDE.md) | Consignes pour les sessions d'assistant IA |

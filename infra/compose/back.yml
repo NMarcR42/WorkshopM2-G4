@@ -3,6 +3,7 @@ name: resilience
 
 networks:
   app:
+  obs:
 
 volumes:
   db-data:
@@ -12,6 +13,10 @@ secrets:
     file: ./.secrets/db_password
   jwt_secret:
     file: ./.secrets/jwt_secret
+  canary_password:                       # meme valeur que cote canary (ops) : auth en derive le hash du compte "canary"
+    file: ./.secrets/canary_password
+  synthetic_probe_token:                 # meme valeur que cote canary (ops) : jeton de la transaction de controle
+    file: ./.secrets/synthetic_probe_token
 
 services:
   db:
@@ -33,7 +38,7 @@ services:
 
   api:
     build: ./dev/api
-    networks: [app]
+    networks: [app, obs]                 # obs : Prometheus scrute /metrics (mono-hote ; multi-machines : par IP)
     ports:
       - "${BACK_BIND:-127.0.0.1}:${API_PORT:-8000}:8000"   # multi-machines : IP privee, filtree au seul WAF
     environment:
@@ -42,7 +47,9 @@ services:
       DB_USER: payments
       DB_PASSWORD_FILE: /run/secrets/db_password
       JWT_SECRET_FILE: /run/secrets/jwt_secret
-    secrets: [db_password, jwt_secret]
+      SYNTHETIC_PROBE_TOKEN_FILE: /run/secrets/synthetic_probe_token
+      AUTH_URL: http://auth:8000          # la transaction de controle verifie auth (/auth/health) avant de payer
+    secrets: [db_password, jwt_secret, synthetic_probe_token]
     depends_on:
       db: { condition: service_healthy }
     deploy:
@@ -56,12 +63,7 @@ services:
     ports:
       - "${BACK_BIND:-127.0.0.1}:${AUTH_PORT:-8001}:8000"
     environment:
-      DB_HOST: db
-      DB_NAME: payments
-      DB_USER: payments
-      DB_PASSWORD_FILE: /run/secrets/db_password
       JWT_SECRET_FILE: /run/secrets/jwt_secret
-    secrets: [db_password, jwt_secret]
-    depends_on:
-      db: { condition: service_healthy }
+      CANARY_PASSWORD_FILE: /run/secrets/canary_password   # cree le compte "canary" de la sonde
+    secrets: [jwt_secret, canary_password]   # pas de base de donnees : auth n'a besoin que des secrets de signature et du canary
     restart: unless-stopped

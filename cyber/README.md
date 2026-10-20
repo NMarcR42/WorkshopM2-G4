@@ -19,4 +19,4 @@ Aucun secret en clair dans le dépôt.
   1. Chaque membre : `age-keygen -o ~/.config/sops/age/keys.txt`, puis ajoute sa clé **publique** dans `.sops.yaml`.
   2. Les secrets vivent dans `cyber/secrets/secrets.enc.yaml` (chiffré, versionnable). Édition : `sops cyber/secrets/secrets.enc.yaml`.
   3. `scripts/decrypt-secrets.sh` écrit un fichier par secret dans `.secrets/`, lu par `secrets:` du compose.
-- Clés attendues : `db_password`, `jwt_secret`, `engine_token`, `grafana_admin_password`, et `ansible_ssh_key` **uniquement** en `REMEDIATION_MODE=ssh`.
+- Clés attendues : `db_password`, `jwt_secret`, `engine_token`, `grafana_admin_password`, `canary_password` (mot de passe du compte `canary`, lu par `auth` et par `canary`), et `ansible_ssh_key` **uniquement** en `REMEDIATION_MODE=ssh`.

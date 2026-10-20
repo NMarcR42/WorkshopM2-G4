@@ -57,7 +57,7 @@ def install(app: FastAPI) -> None:
             route = getattr(request.scope.get("route"), "path", "unmatched")  # gabarit : evite l'explosion de cardinalite
             REQUESTS.labels(request.method, route, str(status)).inc()
             LATENCY.labels(route).observe(elapsed)
-            if route not in ("/metrics", "/health"):
+            if route not in ("/metrics", "/health", "/api/health"):
                 log.info("request", extra={"extra_fields": {
                     "method": request.method, "path": request.url.path, "route": route,
                     "status": status, "duration_ms": round(elapsed * 1000, 1),

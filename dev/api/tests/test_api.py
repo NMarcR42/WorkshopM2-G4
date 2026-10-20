@@ -84,6 +84,19 @@ def test_client_ne_peut_pas_debiter_le_compte_dun_autre(client):
 
 
 @needs_db
+def test_liste_des_comptes_limitee_au_proprietaire(client):
+    mine = client.get("/v1/accounts", headers=token("alice", "client"))
+    assert mine.status_code == 200
+    assert [a["id"] for a in mine.json()] == ["ACC-ALICE"]
+    everyone = client.get("/v1/accounts", headers=token("ops", "operator")).json()
+    assert {"ACC-ALICE", "ACC-BOB"} <= {a["id"] for a in everyone}
+
+
+def test_liste_des_comptes_sans_jeton_401(client):
+    assert client.get("/v1/accounts").status_code == 401
+
+
+@needs_db
 def test_compte_inconnu_404(client):
     r = client.post("/v1/transactions", json={**TX, "to_account": "ACC-NOPE"}, headers=token("canary", "canary"))
     assert r.status_code == 404
@@ -95,3 +108,45 @@ def test_grand_livre_coherent_apres_transactions(client):
         client.post("/v1/transactions", json=TX, headers=token("canary", "canary"))
     check = client.get("/v1/ledger/check", headers=token("ops", "operator")).json()
     assert check == {"consistent": True, "mismatches": []}
+
+
+# ---------- contrat infra : préfixe conservé et transaction de contrôle ----------
+
+def test_prefixe_api_conserve(client):
+    assert client.get("/api/health").json() == {"status": "ok"}
+    assert client.get("/api/v1/accounts").status_code == 401  # la route existe sous /api (401 et non 404)
+    assert "/api/v1/transactions" in client.get("/openapi.json").text
+
+
+def test_synthetique_ferme_sans_secret_ou_sans_bon_jeton(client, monkeypatch):
+    body = {"amount": 1.0, "currency": "EUR", "label": "t"}
+    monkeypatch.delenv("SYNTHETIC_PROBE_TOKEN", raising=False)
+    assert client.post("/api/synthetic/transaction", json=body).status_code == 503
+    monkeypatch.setenv("SYNTHETIC_PROBE_TOKEN", "bon")
+    assert client.post("/api/synthetic/transaction", json=body).status_code == 401
+    assert client.post("/api/synthetic/transaction", json=body, headers={"Authorization": "Bearer faux"}).status_code == 401
+    # un JWT client n'est pas un jeton de sonde
+    assert client.post("/api/synthetic/transaction", json=body, headers=token("alice", "client")).status_code == 401
+
+
+def test_synthetique_echoue_si_auth_tombe(client, monkeypatch):
+    from app import synthetic
+    monkeypatch.setenv("SYNTHETIC_PROBE_TOKEN", "bon")
+    monkeypatch.setattr(synthetic, "settings", synthetic.settings.__class__(auth_url="http://auth.invalid"))
+    r = client.post("/api/synthetic/transaction", json={"amount": 1.0, "currency": "EUR"},
+                    headers={"Authorization": "Bearer bon"})
+    assert r.status_code == 503
+
+
+@needs_db
+def test_synthetique_traverse_auth_et_base(client, monkeypatch):
+    import httpx
+
+    from app import synthetic
+    monkeypatch.setenv("SYNTHETIC_PROBE_TOKEN", "bon")
+    monkeypatch.setattr(synthetic, "settings", synthetic.settings.__class__(auth_url="http://auth.test"))
+    monkeypatch.setattr(synthetic.httpx, "get", lambda url, **kw: httpx.Response(200, json={"status": "ok"}))
+    r = client.post("/api/synthetic/transaction", json={"amount": 1.0, "currency": "EUR", "label": "t"},
+                    headers={"Authorization": "Bearer bon"})
+    assert r.status_code == 200 and r.json()["status"] == "ok"
+    assert client.get("/api/v1/ledger/check", headers=token("ops", "operator")).json()["consistent"] is True

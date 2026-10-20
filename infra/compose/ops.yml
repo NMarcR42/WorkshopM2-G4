@@ -18,8 +18,14 @@ volumes:
 secrets:
   engine_token:
     file: ./.secrets/engine_token
+  alert_webhook_token:                   # jeton du webhook Alertmanager -> remediation (POST /api/v1/alerts)
+    file: ./.secrets/alert_webhook_token
   grafana_admin_password:
     file: ./.secrets/grafana_admin_password
+  canary_password:
+    file: ./.secrets/canary_password
+  synthetic_probe_token:                 # meme valeur que cote api (back) : preuve de reprise officielle
+    file: ./.secrets/synthetic_probe_token
 
 services:
   remediation:
@@ -28,19 +34,42 @@ services:
     environment:
       CANARY_URL: ${CANARY_URL:-http://canary:8000}
       ENGINE_TOKEN_FILE: /run/secrets/engine_token
+      ALERT_WEBHOOK_TOKEN_FILE: /run/secrets/alert_webhook_token
       REMEDIATION_MODE: ${REMEDIATION_MODE:-local}
-    secrets: [engine_token]
+      # Jamais bloquer les reseaux Docker (le canary y est) ni la boucle locale : on couperait notre propre preuve de reprise.
+      PROTECTED_CIDRS: ${PROTECTED_CIDRS:-127.0.0.0/8,172.16.0.0/12}
+    secrets: [engine_token, alert_webhook_token]
     volumes:
       - incidents:/var/lib/resilience/incidents
     depends_on: [canary]
     restart: unless-stopped
 
   canary:
-    build: ./dev/canary                 # transaction fictive via le WAF + POST /verify
-    networks: [edge, ctrl, obs]
+    build: ./dev/canary                 # transaction fictive via le WAF + POST /verify (aucun port publie)
+    networks: [edge, ctrl, obs]         # edge : atteint le WAF comme un client ; ctrl : appele par remediation
     environment:
-      TARGET_URL: ${WAF_URL:-http://waf:8080}   # multi-machines : http://<ip-machine-front>:8080
-      PROBE_INTERVAL_S: "5"
+      WAF_URL: ${WAF_URL:-http://waf:8080}   # multi-machines : http://<ip-machine-front>:8080
+      CANARY_INTERVAL_S: "5"
+      CANARY_PASSWORD_FILE: /run/secrets/canary_password
+      SYNTHETIC_PROBE_TOKEN_FILE: /run/secrets/synthetic_probe_token
+    secrets: [canary_password, synthetic_probe_token]
+    restart: unless-stopped
+
+  supervision:
+    build: ./dev/supervision            # vue du jury : etat du paiement, incidents, courbes (lecture seule)
+    networks: [ctrl, obs]               # ctrl : canary et remediation ; obs : Prometheus. Pas sur edge.
+    ports:
+      - "${ADMIN_BIND:-127.0.0.1}:${SUPERVISION_PORT:-8090}:8000"   # local comme Grafana : jamais derriere le WAF public
+    environment:
+      CANARY_URL: ${CANARY_URL:-http://canary:8000}
+      ENGINE_URL: http://remediation:8000
+      # Sources lues par le dashboard : noms de services en mono-hote, adresses de l'infra par .env sur vm-ops.
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://prometheus:9090}
+      ALERTMANAGER_URL: ${ALERTMANAGER_URL:-http://alertmanager:9093}   # absent en mono-hote : repli sur Prometheus (ALERTS)
+      LOKI_URL: ${LOKI_URL:-http://loki:3100}
+      LOKI_REMEDIATION_LABEL: ${LOKI_REMEDIATION_LABEL:-service=remediation}   # vm-ops : syslog_identifier=ra-remediate
+      ENGINE_TOKEN_FILE: /run/secrets/engine_token   # lecture des incidents ; le token ne quitte jamais le serveur
+    secrets: [engine_token]
     restart: unless-stopped
 
   detector:
