@@ -1,6 +1,6 @@
 import os
-import time
 import threading
+import time
 
 import joblib
 import numpy as np
