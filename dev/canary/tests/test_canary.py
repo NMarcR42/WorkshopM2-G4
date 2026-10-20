@@ -22,6 +22,9 @@ def healthy(request: httpx.Request) -> httpx.Response:
         assert request.headers["authorization"] == "Bearer jeton"
         assert request.headers["idempotency-key"].startswith("canary-")
         return httpx.Response(201, json={"status": "COMPLETED"})
+    if path == "/api/synthetic/transaction":
+        assert request.headers["authorization"] == "Bearer jeton-sonde"
+        return httpx.Response(200, json={"status": "ok"})
     if path == "/api/v1/ledger/check":
         return httpx.Response(200, json={"consistent": True, "mismatches": []})
     return httpx.Response(404)
@@ -108,3 +111,19 @@ def test_verify_et_metrique(monkeypatch):
 @pytest.fixture(autouse=True)
 def _no_real_secret(monkeypatch):
     monkeypatch.delenv("CANARY_PASSWORD_FILE", raising=False)
+
+
+def test_transaction_de_controle_jouee_si_le_jeton_est_fourni(monkeypatch):
+    monkeypatch.setenv("CANARY_PASSWORD", "x")
+    monkeypatch.setenv("SYNTHETIC_PROBE_TOKEN", "jeton-sonde")
+    fake_waf(monkeypatch, healthy)
+    r = probe.run_probe()
+    assert r["ok"] and [s["step"] for s in r["steps"]] == ["login", "transaction", "synthetic", "ledger"]
+
+
+def test_echec_de_la_transaction_de_controle_designe_l_etape(monkeypatch):
+    monkeypatch.setenv("CANARY_PASSWORD", "x")
+    monkeypatch.setenv("SYNTHETIC_PROBE_TOKEN", "jeton-sonde")
+    fake_waf(monkeypatch, lambda req: httpx.Response(503) if req.url.path == "/api/synthetic/transaction" else healthy(req))
+    r = probe.run_probe()
+    assert not r["ok"] and r["failed_step"] == "synthetic"

@@ -15,6 +15,8 @@ secrets:
     file: ./.secrets/jwt_secret
   canary_password:                       # meme valeur que cote canary (ops) : auth en derive le hash du compte "canary"
     file: ./.secrets/canary_password
+  synthetic_probe_token:                 # meme valeur que cote canary (ops) : jeton de la transaction de controle
+    file: ./.secrets/synthetic_probe_token
 
 services:
   db:
@@ -45,7 +47,9 @@ services:
       DB_USER: payments
       DB_PASSWORD_FILE: /run/secrets/db_password
       JWT_SECRET_FILE: /run/secrets/jwt_secret
-    secrets: [db_password, jwt_secret]
+      SYNTHETIC_PROBE_TOKEN_FILE: /run/secrets/synthetic_probe_token
+      AUTH_URL: http://auth:8000          # la transaction de controle verifie auth (/auth/health) avant de payer
+    secrets: [db_password, jwt_secret, synthetic_probe_token]
     depends_on:
       db: { condition: service_healthy }
     deploy:

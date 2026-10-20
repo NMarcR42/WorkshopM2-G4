@@ -21,7 +21,12 @@ API métier FastAPI : virements fictifs entre comptes fictifs, PostgreSQL, JWT. 
 | GET | `/v1/accounts` | idem | Liste des comptes : ceux du client connecté (`owner = sub`), tous pour `operator` / `canary` |
 | GET | `/v1/accounts/{id}` | idem | Solde (un `client` ne voit que les siens) |
 | GET | `/v1/ledger/check` | canary, operator | Cohérence comptable |
-| GET | `/health` `/ready` `/metrics` | public | Sondes et métriques Prometheus |
+| POST | `/api/synthetic/transaction` | jeton de sonde | Transaction de contrôle de l'infra (voir ci-dessous) |
+| GET | `/api/health` `/api/ready` `/metrics` | public | Sondes et métriques Prometheus |
+
+Contrat infra : toutes les routes `/v1/...` sont servies sous `/api` (préfixe conservé par le gateway). Les anciens chemins sans préfixe restent servis, masqués de `/docs`, tant que le front de dev et le WAF local retirent le préfixe. `auth` fait de même (`/auth/login`, `/auth/health`).
+
+**Transaction de contrôle** : `Authorization: Bearer <synthetic_probe_token>` (secret `SYNTHETIC_PROBE_TOKEN_FILE`, route fermée en 503 sans secret), corps `{"amount":1.0,"currency":"EUR","label":"..."}`. Elle appelle `AUTH_URL/auth/health`, puis fait un vrai virement entre `ACC-CANARY-A` et `ACC-CANARY-B` (sens inversé si A est vide) : `200 {"status":"ok",...}`. Le canary la joue en plus de son parcours dès qu'il a `SYNTHETIC_PROBE_TOKEN(_FILE)`.
 
 Documentation interactive : `/docs`. Comptes de départ : `ACC-ALICE`, `ACC-BOB`, `ACC-MERCHANT`, `ACC-CANARY-A`, `ACC-CANARY-B`.
 

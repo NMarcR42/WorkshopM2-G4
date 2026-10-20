@@ -22,6 +22,8 @@ secrets:
     file: ./.secrets/grafana_admin_password
   canary_password:
     file: ./.secrets/canary_password
+  synthetic_probe_token:                 # meme valeur que cote api (back) : preuve de reprise officielle
+    file: ./.secrets/synthetic_probe_token
 
 services:
   remediation:
@@ -46,7 +48,8 @@ services:
       WAF_URL: ${WAF_URL:-http://waf:8080}   # multi-machines : http://<ip-machine-front>:8080
       CANARY_INTERVAL_S: "5"
       CANARY_PASSWORD_FILE: /run/secrets/canary_password
-    secrets: [canary_password]
+      SYNTHETIC_PROBE_TOKEN_FILE: /run/secrets/synthetic_probe_token
+    secrets: [canary_password, synthetic_probe_token]
     restart: unless-stopped
 
   supervision:

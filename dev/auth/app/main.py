@@ -38,7 +38,10 @@ class TokenOut(BaseModel):
     role: str
 
 
-@app.post("/login", response_model=TokenOut)
+# Contrat infra : le préfixe /auth est CONSERVÉ par le gateway. Les chemins sans préfixe restent servis (masqués de /docs)
+# pour le front de dev et le WAF local, qui retirent encore le préfixe.
+@app.post("/auth/login", response_model=TokenOut)
+@app.post("/login", response_model=TokenOut, include_in_schema=False)
 def login(body: LoginIn, request: Request):
     """Échange identifiant + mot de passe contre un JWT que l'API vérifie elle-même."""
     user = users.get(body.username)
@@ -62,6 +65,7 @@ def login(body: LoginIn, request: Request):
     return TokenOut(access_token=token, expires_in=settings.token_ttl_s, username=body.username, role=user["role"])
 
 
+@app.get("/auth/health", include_in_schema=False)
 @app.get("/health", include_in_schema=False)
 def health():
     """Le process répond. Rien d'autre à vérifier : auth n'a pas de base de données."""

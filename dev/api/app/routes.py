@@ -12,6 +12,18 @@ router = APIRouter(prefix="/v1")
 TX_COLUMNS = "id, from_account, to_account, amount, currency, status, created_by, created_at"
 
 
+def apply_transfer(conn, from_account, to_account, amount, currency, created_by, idempotency_key=None) -> dict:
+    """Débit + crédit + ligne `transactions`, dans la transaction SQL de l'appelant (comptes déjà verrouillés).
+    Partagé avec la transaction de contrôle : la preuve de reprise passe par le même code que les vrais paiements."""
+    conn.execute("UPDATE accounts SET balance = balance - %s WHERE id = %s", (amount, from_account))
+    conn.execute("UPDATE accounts SET balance = balance + %s WHERE id = %s", (amount, to_account))
+    return conn.execute(
+        f"INSERT INTO transactions (id, idempotency_key, from_account, to_account, amount, currency, status, created_by) "
+        f"VALUES (%s, %s, %s, %s, %s, %s, 'COMPLETED', %s) RETURNING {TX_COLUMNS}",
+        (uuid4(), idempotency_key, from_account, to_account, amount, currency, created_by),
+    ).fetchone()
+
+
 @router.post("/transactions", response_model=TransactionOut, status_code=201)
 def create_transaction(
     body: TransactionIn,
@@ -49,13 +61,7 @@ def create_transaction(
             TRANSACTIONS.labels("rejected").inc()
             raise HTTPException(422, "Solde insuffisant")
 
-        conn.execute("UPDATE accounts SET balance = balance - %s WHERE id = %s", (body.amount, src["id"]))
-        conn.execute("UPDATE accounts SET balance = balance + %s WHERE id = %s", (body.amount, dst["id"]))
-        row = conn.execute(
-            f"INSERT INTO transactions (id, idempotency_key, from_account, to_account, amount, currency, status, created_by) "
-            f"VALUES (%s, %s, %s, %s, %s, %s, 'COMPLETED', %s) RETURNING {TX_COLUMNS}",
-            (uuid4(), idempotency_key, body.from_account, body.to_account, body.amount, body.currency, user.sub),
-        ).fetchone()
+        row = apply_transfer(conn, body.from_account, body.to_account, body.amount, body.currency, user.sub, idempotency_key)
     TRANSACTIONS.labels("completed").inc()
     return row
 

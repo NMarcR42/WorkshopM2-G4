@@ -41,6 +41,8 @@ def run_probe() -> dict:
         password = secret("CANARY_PASSWORD")
         _expect("config", bool(password), "mot de passe canary absent (CANARY_PASSWORD_FILE)")
 
+        probe_token = secret("SYNTHETIC_PROBE_TOKEN")
+
         # Un client neuf par passe (pas de connexion réutilisée) : chaque passe repart de zéro, comme un nouveau client.
         with httpx.Client(base_url=settings.waf_url, timeout=settings.timeout_s) as http:
             ctx: dict = {}
@@ -67,6 +69,16 @@ def run_probe() -> dict:
                 _expect("transaction", r.status_code in (200, 201), f"HTTP {r.status_code}")
                 _expect("transaction", r.json().get("status") == "COMPLETED", f"statut {r.json().get('status')}")
 
+            def synthetic():
+                # Preuve officielle de l'infra : auth + api + base, avec le jeton dédié (pas le JWT du canary).
+                r = http.post(
+                    f"{settings.api_prefix}/synthetic/transaction",
+                    json={"amount": 1.0, "currency": settings.currency, "label": "canary"},
+                    headers={"Authorization": f"Bearer {probe_token}"},
+                )
+                _expect("synthetic", r.status_code == 200, f"HTTP {r.status_code}")
+                _expect("synthetic", r.json().get("status") == "ok", f"statut {r.json().get('status')}")
+
             def ledger():
                 r = http.get(f"{settings.api_prefix}/v1/ledger/check", headers=ctx["headers"])
                 _expect("ledger", r.status_code == 200, f"HTTP {r.status_code}")
@@ -75,6 +87,8 @@ def run_probe() -> dict:
 
             step("login", login)
             step("transaction", pay)
+            if probe_token:  # sans jeton (poste de dev sans ce secret), la sonde reste celle d'avant
+                step("synthetic", synthetic)
             step("ledger", ledger)
     except StepFailed as exc:
         failed, detail = str(exc).split(":", 1)[0], str(exc)
@@ -102,4 +116,5 @@ def _next_step(steps: list[dict]) -> str:
     for s in steps:
         if not s["ok"]:
             return s["step"]
-    return ("login", "transaction", "ledger")[min(len(steps), 2)]
+    order = ("login", "transaction", "synthetic", "ledger") if secret("SYNTHETIC_PROBE_TOKEN") else ("login", "transaction", "ledger")
+    return order[min(len(steps), len(order) - 1)]

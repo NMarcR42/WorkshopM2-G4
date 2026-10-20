@@ -54,3 +54,8 @@ def test_compte_canary_seulement_si_mot_de_passe_fourni(monkeypatch):
     assert "canary" not in load_users()
     monkeypatch.setenv("CANARY_PASSWORD", "mot-de-passe-de-test")
     assert load_users()["canary"]["role"] == "canary"
+
+
+def test_prefixe_auth_conserve(client):
+    assert client.get("/auth/health").json() == {"status": "ok"}
+    assert client.post("/auth/login", json={"username": "alice", "password": "alice-demo"}).status_code == 200
