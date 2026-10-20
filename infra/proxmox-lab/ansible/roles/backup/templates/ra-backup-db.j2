@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Sauvegarde PostgreSQL validée + copie distante (géré par Ansible)
+set -euo pipefail
+
+DIR=/var/backups/resilience/db
+TEXTFILE=/var/lib/node_exporter/textfile/ra_backup.prom
+TS=$(date +%Y%m%d-%H%M%S)
+mkdir -p "$DIR"
+chmod 700 "$DIR"
+
+TMP="$DIR/.db-$TS.dump"
+trap 'rm -f "$TMP"' EXIT
+
+docker exec ra-postgres pg_dump -U {{ db_user }} -d {{ db_name }} -Fc > "$TMP"
+# Un dump n'est conservé que s'il est relisible
+docker exec -i ra-postgres pg_restore --list < "$TMP" > /dev/null
+mv "$TMP" "$DIR/db-$TS.dump"
+
+# Rotation locale
+ls -1t "$DIR"/db-*.dump | tail -n +$(({{ backup_keep }} + 1)) | xargs -r rm -f
+
+# Copie hors de vm-app (vm-sauv n'accepte que l'écriture de nouveaux fichiers)
+if rsync -a -e "ssh -i /root/.ssh/backup_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=accept-new" \
+      "$DIR/db-$TS.dump" backup-recv@{{ vm_ips.sauv }}:; then
+  REMOTE=1
+else
+  REMOTE=0
+  logger -t ra-backup -p user.warning "copie vers vm-sauv échouée pour db-$TS.dump"
+fi
+
+SIZE=$(stat -c %s "$DIR/db-$TS.dump")
+cat > "$TEXTFILE.tmp" <<EOF
+# HELP ra_backup_last_success_timestamp_seconds Horodatage du dernier dump PostgreSQL valide
+# TYPE ra_backup_last_success_timestamp_seconds gauge
+ra_backup_last_success_timestamp_seconds $(date +%s)
+# HELP ra_backup_last_size_bytes Taille du dernier dump
+# TYPE ra_backup_last_size_bytes gauge
+ra_backup_last_size_bytes $SIZE
+# HELP ra_backup_remote_copy_ok Dernière copie vers vm-sauv réussie (1) ou non (0)
+# TYPE ra_backup_remote_copy_ok gauge
+ra_backup_remote_copy_ok $REMOTE
+EOF
+mv "$TEXTFILE.tmp" "$TEXTFILE"
+
+logger -t ra-backup "sauvegarde OK db-$TS.dump ($SIZE octets, copie distante=$REMOTE)"

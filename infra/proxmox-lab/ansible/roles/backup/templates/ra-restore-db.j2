@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Restauration PostgreSQL depuis un dump local validé (géré par Ansible)
+# Usage : ra-restore-db [latest | db-AAAAMMJJ-HHMMSS.dump]
+set -euo pipefail
+
+DIR=/var/backups/resilience/db
+ARG=${1:-latest}
+
+if [[ "$ARG" == latest ]]; then
+  FILE=$(ls -1t "$DIR"/db-*.dump 2>/dev/null | head -1)
+elif [[ "$ARG" =~ ^db-[0-9]{8}-[0-9]{6}\.dump$ ]]; then
+  FILE="$DIR/$ARG"
+else
+  logger -t ra-restore "REFUS argument invalide: $ARG"; exit 2
+fi
+[[ -n "${FILE:-}" && -f "$FILE" ]] || { logger -t ra-restore "ECHEC aucun dump disponible"; exit 3; }
+
+logger -t ra-restore "début restauration depuis $(basename "$FILE")"
+cd {{ base_dir }}/app
+docker compose stop api auth
+docker exec -i ra-postgres pg_restore -U {{ db_user }} -d {{ db_name }} \
+  --clean --if-exists --no-owner --single-transaction < "$FILE"
+docker compose start api auth
+logger -t ra-restore "restauration terminée depuis $(basename "$FILE")"

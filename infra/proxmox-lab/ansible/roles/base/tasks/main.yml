@@ -1,0 +1,95 @@
+- name: Nom d'hôte
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+
+- name: Résolution des VM du projet (/etc/hosts)
+  ansible.builtin.template:
+    src: hosts.j2
+    dest: /etc/hosts
+    mode: "0644"
+
+- name: Serveurs DNS (avant toute installation de paquet)
+  ansible.builtin.copy:
+    dest: /etc/resolv.conf
+    mode: "0644"
+    content: |
+      {% for d in lan_dns %}
+      nameserver {{ d }}
+      {% endfor %}
+  when: set_static_ip
+
+- name: Fuseau horaire
+  community.general.timezone:
+    name: "{{ timezone }}"
+
+- name: Paquets de base
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - chrony
+      - qemu-guest-agent
+      - rsync
+      - jq
+      - htop
+      - python3-yaml
+      - python3-requests
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Synchronisation horaire (indispensable pour corréler logs et métriques)
+  ansible.builtin.service:
+    name: chrony
+    state: started
+    enabled: true
+
+- name: Journal systemd persistant
+  ansible.builtin.file:
+    path: /var/log/journal
+    state: directory
+    mode: "2755"
+
+- name: Désactivation d'IPv6
+  ansible.posix.sysctl:
+    name: "{{ item }}"
+    value: "1"
+    sysctl_file: /etc/sysctl.d/90-resilience.conf
+    reload: true
+  loop:
+    - net.ipv6.conf.all.disable_ipv6
+    - net.ipv6.conf.default.disable_ipv6
+  when: disable_ipv6
+
+- name: Adresse IP statique (prise en compte au prochain redémarrage)
+  ansible.builtin.template:
+    src: interfaces.j2
+    dest: /etc/network/interfaces
+    mode: "0644"
+    backup: true
+  when: set_static_ip
+
+- name: Clés SSH des administrateurs (compte ansible)
+  ansible.posix.authorized_key:
+    user: ansible
+    key: "{{ item }}"
+  loop: "{{ ssh_admin_keys }}"
+
+- name: Durcissement SSH
+  ansible.builtin.template:
+    src: sshd-hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/10-resilience.conf
+    mode: "0644"
+  register: sshd_conf
+
+- name: Validation de la configuration SSH
+  ansible.builtin.command: sshd -t
+  changed_when: false
+  when: sshd_conf.changed
+
+- name: Rechargement de SSH
+  ansible.builtin.service:
+    name: ssh
+    state: reloaded
+  when: sshd_conf.changed

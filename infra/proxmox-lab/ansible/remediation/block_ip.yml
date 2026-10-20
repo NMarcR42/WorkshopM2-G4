@@ -1,0 +1,18 @@
+# Attaque réseau / applicative : blocage de la source au niveau du WAF
+# ansible-playbook block_ip.yml -e ip=192.168.137.42
+- name: Remédiation — blocage de {{ ip }}
+  hosts: vm-app
+  gather_facts: false
+  tasks:
+    - name: Contrôle du paramètre
+      ansible.builtin.assert:
+        that: ip is defined and ip is match('^([0-9]{1,3}\.){3}[0-9]{1,3}$')
+
+    - name: Blocage via la liste blanche
+      ansible.builtin.command: "sudo -n /usr/local/sbin/ra-remediate block-ip {{ ip }}"
+      changed_when: true
+
+    - name: Vérification — le service reste disponible pour les clients légitimes
+      ansible.builtin.include_tasks: tasks/verify.yml
+      vars:
+        verify_service: api

@@ -1,0 +1,43 @@
+# vm-app : accès minimal pour la remédiation
+# Le moteur de remédiation n'a NI socket Docker NI sudo complet : il ne peut lancer
+# que les actions listées dans /usr/local/sbin/ra-remediate.
+- name: Compte remediator
+  ansible.builtin.user:
+    name: remediator
+    shell: /bin/bash
+    create_home: true
+
+- name: Lecture de la clé publique de remédiation générée sur vm-ops
+  ansible.builtin.slurp:
+    src: "{{ base_dir }}/ops/keys/remediator_ed25519.pub"
+  delegate_to: "{{ groups['ops'][0] }}"
+  become: true
+  register: remediator_pub
+
+- name: Clé autorisée uniquement depuis vm-ops
+  ansible.posix.authorized_key:
+    user: remediator
+    key: "{{ remediator_pub.content | b64decode }}"
+    key_options: 'from="{{ vm_ips.ops }}",no-port-forwarding,no-agent-forwarding,no-X11-forwarding'
+    exclusive: true
+
+- name: Dossier des preuves (forensic)
+  ansible.builtin.file:
+    path: /var/lib/resilience/forensics
+    state: directory
+    mode: "0700"
+
+- name: Script des actions de remédiation autorisées
+  ansible.builtin.template:
+    src: ra-remediate.j2
+    dest: /usr/local/sbin/ra-remediate
+    mode: "0755"
+
+- name: sudo limité à ce seul script
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/remediator
+    mode: "0440"
+    content: |
+      # Géré par Ansible — le moteur de remédiation ne peut exécuter que ra-remediate
+      remediator ALL=(root) NOPASSWD: /usr/local/sbin/ra-remediate
+    validate: visudo -cf %s

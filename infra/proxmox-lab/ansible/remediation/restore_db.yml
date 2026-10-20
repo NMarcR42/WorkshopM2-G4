@@ -1,0 +1,14 @@
+# Intégrité des données : restauration du dernier dump PostgreSQL validé
+# ansible-playbook restore_db.yml [-e dump=db-20261021-101500.dump]
+- name: Remédiation — restauration de la base
+  hosts: vm-app
+  gather_facts: false
+  tasks:
+    - name: Restauration via la liste blanche
+      ansible.builtin.command: "sudo -n /usr/local/sbin/ra-remediate restore-db {{ dump | default('latest') }}"
+      changed_when: true
+
+    - name: Vérification
+      ansible.builtin.include_tasks: tasks/verify.yml
+      vars:
+        verify_service: api

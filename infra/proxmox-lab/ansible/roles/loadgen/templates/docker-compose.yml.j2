@@ -1,0 +1,13 @@
+# Générateur de trafic de fond — vm-ops (géré par Ansible)
+name: loadgen
+
+services:
+  loadgen:
+    image: {{ images.curl }}
+    container_name: ra-loadgen
+    entrypoint: ["/bin/sh", "/traffic.sh"]
+    volumes:
+      - ./traffic.sh:/traffic.sh:ro
+      - /opt/resilience/ops/keys/synthetic_probe_token:/run/secrets/synthetic_probe_token:ro
+    restart: unless-stopped
+    mem_limit: 64m

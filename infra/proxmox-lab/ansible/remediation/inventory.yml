@@ -1,0 +1,29 @@
+# Inventaire du moteur de remédiation — compte remediator (sudo limité à ra-remediate)
+all:
+  vars:
+    keys_dir: /opt/resilience/ops/keys
+    probe_base_url: https://192.168.1.24
+    remediable_services: [waf, gateway, frontend, api, auth, postgres]
+    # URL de santé à vérifier après remédiation, par service
+    health_paths:
+      waf: /
+      gateway: /
+      frontend: /
+      api: /api/health
+      auth: /auth/health
+      postgres: /api/health
+    synthetic_check: false                     # true quand l'endpoint du dev existe
+    synthetic_path: /api/synthetic/transaction
+    pve:
+      host: 192.168.1.89
+      node: pve
+      app_vmid: 200
+      snapshot: baseline-sain
+  hosts:
+    vm-app:
+      ansible_host: 192.168.1.24
+      ansible_user: remediator
+      ansible_ssh_private_key_file: /opt/resilience/ops/keys/remediator_ed25519
+    localhost:
+      ansible_connection: local
+      ansible_python_interpreter: "{{ ansible_playbook_python }}"

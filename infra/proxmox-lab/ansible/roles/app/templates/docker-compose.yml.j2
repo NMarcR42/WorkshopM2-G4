@@ -1,0 +1,229 @@
+# SI de paiement fictif — vm-app (géré par Ansible)
+#
+#  PC Attaquant -> pfSense WAN:443 -> NAT -> 192.168.10.24:443 (DMZ, eth1) --+
+#  Sondes / admin (LAN) -> 192.168.1.24:443 ----------------------------------+--> waf (BunkerWeb)
+#  waf --[ra_edge]--> gateway --[ra_backend]--> frontend:8080 / api:8000 / auth:8001
+#  api, auth --[ra_data (interne)]--> postgres        Vault : vm-ops:8200
+name: app
+
+networks:
+  bw-universe:
+    name: ra_bw_universe
+    ipam:
+      config:
+        - subnet: {{ bw_api_subnet }}
+  edge:
+    name: ra_edge
+  backend:
+    name: ra_backend
+  data:
+    name: ra_data
+    internal: true     # aucun accès sortant ni entrant hors des conteneurs reliés
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+
+volumes:
+  pg-data:
+  bw-storage:
+
+x-common: &common
+  restart: unless-stopped
+  security_opt: ["no-new-privileges:true"]
+
+services:
+  # ---------------------------------------------------------------- BunkerWeb (WAF)
+  # Instance nginx durcie + ModSecurity/CRS v4, bannissement auto, limitation de débit.
+  # La configuration est portée par le scheduler, qui la pousse à l'instance par son API (:5000).
+  waf:
+    image: {{ images.bunkerweb }}
+    container_name: ra-waf
+    ports:
+      - "{{ vm_ips.app }}:80:8080"
+      - "{{ vm_ips.app }}:443:8443"
+{% if waf_dmz_enabled %}
+      - "{{ waf_dmz_ip }}:80:8080"
+      - "{{ waf_dmz_ip }}:443:8443"
+{% endif %}
+    environment:
+      API_WHITELIST_IP: "127.0.0.0/8 {{ bw_api_subnet }}"
+    networks:
+      bw-universe: {}
+      edge: {}
+    restart: unless-stopped
+    mem_limit: 1g
+
+  bw-scheduler:
+    image: {{ images.bunkerweb_scheduler }}
+    container_name: ra-bw-scheduler
+    depends_on: [waf]
+    environment:
+      API_WHITELIST_IP: "127.0.0.0/8 {{ bw_api_subnet }}"
+      BUNKERWEB_INSTANCES: waf
+      SERVER_NAME: "{{ waf_server_names | join(' ') }}"
+      MULTISITE: "no"
+      DATABASE_URI: "{{ bw_db_uri }}"
+      SEND_ANONYMOUS_REPORT: "no"
+      # Reverse proxy vers le gateway interne
+      USE_REVERSE_PROXY: "yes"
+      REVERSE_PROXY_HOST: http://gateway:8080
+      REVERSE_PROXY_URL: /
+      # HTTPS (certificat auto-signé : limite assumée du prototype)
+      GENERATE_SELF_SIGNED_SSL: "yes"
+      AUTO_REDIRECT_HTTP_TO_HTTPS: "yes"
+      # Filtrage applicatif
+      USE_MODSECURITY: "yes"
+      USE_MODSECURITY_CRS: "yes"
+      ALLOWED_METHODS: GET|POST|HEAD|PUT|PATCH|DELETE|OPTIONS
+      MAX_CLIENT_SIZE: 1m
+      # Réponse automatique native : bannissement après {{ bw_bad_behavior_threshold }} erreurs 4xx en 60 s
+      USE_BAD_BEHAVIOR: "yes"
+      BAD_BEHAVIOR_THRESHOLD: "{{ bw_bad_behavior_threshold }}"
+      BAD_BEHAVIOR_BAN_TIME: "3600"
+      # Anti-DoS
+      USE_LIMIT_REQ: "yes"
+      LIMIT_REQ_URL: /
+      LIMIT_REQ_RATE: "{{ bw_limit_req_rate }}"
+      USE_LIMIT_CONN: "yes"
+      # Pas de dépendance à des services Internet pendant la démo
+      USE_DNSBL: "no"
+      # Les sondes de supervision ne doivent jamais être bannies
+      USE_WHITELIST: "yes"
+      WHITELIST_IP: "{{ vm_ips.obs }} {{ vm_ips.ops }}"
+      WHITELIST_RDNS: ""
+    volumes:
+      - bw-storage:/data
+    networks:
+      bw-universe: {}
+    restart: unless-stopped
+    mem_limit: 512m
+
+  bw-ui:
+    image: {{ images.bunkerweb_ui }}
+    container_name: ra-bw-ui
+    depends_on: [bw-scheduler]
+    ports:
+      - "{{ vm_ips.app }}:{{ bw_ui_port }}:7000"
+    environment:
+      DATABASE_URI: "{{ bw_db_uri }}"
+      ADMIN_USERNAME: "{{ bw_admin_user }}"
+      ADMIN_PASSWORD: "{{ bw_admin_password }}"
+      OVERRIDE_ADMIN_CREDS: "yes"
+    volumes:
+      - bw-storage:/data
+    networks:
+      bw-universe: {}
+    restart: unless-stopped
+    mem_limit: 256m
+
+  gateway:
+    <<: *common
+    image: {{ images.nginx }}
+    container_name: ra-gateway
+    volumes:
+      - ./gateway/default.conf:/etc/nginx/conf.d/default.conf:ro
+    networks: [edge, backend]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    mem_limit: 128m
+
+  frontend:
+    <<: *common
+    image: {{ app_images.frontend }}
+    container_name: ra-frontend
+{% if app_placeholder %}
+    command: ["--port", "{{ app_ports.frontend }}"]   # bouchon whoami
+{% endif %}
+    networks: [backend]
+    mem_limit: 256m
+
+  api:
+    <<: *common
+    image: {{ app_images.api }}
+    container_name: ra-api
+{% if app_placeholder %}
+    command: ["--port", "{{ app_ports.api }}"]   # bouchon whoami
+{% endif %}
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: {{ db_name }}
+      DB_USER: {{ db_user }}
+      DB_PASSWORD_FILE: /run/secrets/postgres_password
+      VAULT_ADDR: http://{{ vm_ips.ops }}:8200
+    secrets: [postgres_password]
+    networks: [backend, data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    labels:
+      prometheus.scrape: "true"
+      prometheus.port: "{{ app_ports.api }}"
+      prometheus.network: ra_backend
+    mem_limit: 512m
+
+  auth:
+    <<: *common
+    image: {{ app_images.auth }}
+    container_name: ra-auth
+{% if app_placeholder %}
+    command: ["--port", "{{ app_ports.auth }}"]   # bouchon whoami
+{% endif %}
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: {{ db_name }}
+      DB_USER: {{ db_user }}
+      DB_PASSWORD_FILE: /run/secrets/postgres_password
+      VAULT_ADDR: http://{{ vm_ips.ops }}:8200
+    secrets: [postgres_password]
+    networks: [backend, data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    labels:
+      prometheus.scrape: "true"
+      prometheus.port: "{{ app_ports.auth }}"
+      prometheus.network: ra_backend
+    mem_limit: 512m
+
+  postgres:
+    <<: *common
+    image: {{ images.postgres }}
+    container_name: ra-postgres
+    environment:
+      POSTGRES_DB: {{ db_name }}
+      POSTGRES_USER: {{ db_user }}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    networks: [data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {{ db_user }} -d {{ db_name }}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: 1g
+
+  postgres-exporter:
+    <<: *common
+    image: {{ images.postgres_exporter }}
+    container_name: ra-postgres-exporter
+    environment:
+      DATA_SOURCE_URI: postgres:5432/{{ db_name }}?sslmode=disable
+      DATA_SOURCE_USER: {{ db_user }}
+      DATA_SOURCE_PASS_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    expose: ["9187"]
+    networks: [data, backend]
+    labels:
+      prometheus.scrape: "true"
+      prometheus.port: "9187"
+      prometheus.network: ra_backend
+    mem_limit: 64m
+

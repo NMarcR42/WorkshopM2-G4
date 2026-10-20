@@ -1,0 +1,144 @@
+# Règles d'alerte Prometheus — PROJECT RESILIENCE-ALPHA
+# Labels utilisés par le moteur de remédiation :
+#   category    : availability | business | security | performance | data | infra
+#   remediation : restart | recreate | block_ip | isolate | restore_db | rollback_vm | auto | none
+#   service     : service ciblé (waf, gateway, frontend, api, auth, postgres)
+groups:
+  - name: disponibilite
+    rules:
+      - alert: ServiceIndisponible
+        expr: probe_success{job="blackbox-http"} == 0
+        for: 10s
+        labels:
+          severity: critical
+          category: availability
+          remediation: restart
+        annotations:
+          summary: "{{ $labels.service }} injoignable via le WAF"
+          description: "La sonde {{ $labels.instance }} échoue depuis plus de 10 s."
+
+      - alert: TransactionSynthetiqueEnEchec
+        expr: probe_success{job="synthetic"} == 0
+        for: 10s
+        labels:
+          severity: critical
+          category: business
+          remediation: restart
+        annotations:
+          summary: "Une transaction fictive de bout en bout échoue"
+          description: "Le parcours métier (auth -> api -> base) n'aboutit plus."
+
+      - alert: LatenceTransactionElevee
+        expr: probe_duration_seconds{job=~"synthetic|blackbox-http"} > 2
+        for: 1m
+        labels:
+          severity: warning
+          category: performance
+          remediation: none
+        annotations:
+          summary: "Latence élevée sur {{ $labels.service }} ({{ $value | humanizeDuration }})"
+
+      - alert: PostgresIndisponible
+        expr: pg_up == 0
+        for: 10s
+        labels:
+          severity: critical
+          category: availability
+          remediation: restart
+          service: postgres
+        annotations:
+          summary: "PostgreSQL ne répond plus"
+
+      - alert: ConteneurDisparu
+        expr: |
+          label_replace(
+            count by (name) (container_last_seen{name=~"ra-(waf|gateway|frontend|api|auth|postgres)"} offset 2m)
+            unless
+            count by (name) (container_last_seen{name=~"ra-(waf|gateway|frontend|api|auth|postgres)"}),
+            "service", "$1", "name", "ra-(.*)")
+        for: 10s
+        labels:
+          severity: critical
+          category: availability
+          remediation: recreate
+        annotations:
+          summary: "Le conteneur {{ $labels.name }} a disparu"
+
+  - name: securite
+    rules:
+      - alert: AnomalieDetecteeML
+        expr: max by (service, scenario) (ra_anomaly_score) > 0.8
+        for: 15s
+        labels:
+          severity: high
+          category: security
+          remediation: auto
+        annotations:
+          summary: "Le modèle ML signale un comportement anormal sur {{ $labels.service }}"
+          description: "Score d'anomalie {{ $value | printf \"%.2f\" }} (seuil 0.8)."
+
+      - alert: TauxErreurs5xxEleve
+        expr: |
+          sum by (service) (rate(http_requests_total{status=~"5.."}[1m]))
+            / sum by (service) (rate(http_requests_total[1m])) > 0.2
+        for: 1m
+        labels:
+          severity: high
+          category: availability
+          remediation: restart
+        annotations:
+          summary: "Plus de 20 % d'erreurs 5xx sur {{ $labels.service }}"
+
+  - name: donnees
+    rules:
+      - alert: SauvegardeTropAncienne
+        expr: time() - ra_backup_last_success_timestamp_seconds > 900
+        for: 1m
+        labels:
+          severity: warning
+          category: data
+          remediation: none
+        annotations:
+          summary: "Aucune sauvegarde réussie depuis plus de 15 min (RPO menacé)"
+
+  - name: hotes
+    rules:
+      - alert: CibleSupervisionDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: warning
+          category: infra
+          remediation: none
+        annotations:
+          summary: "{{ $labels.job }} sur {{ $labels.host }} ne répond plus"
+
+      - alert: HoteCPUSature
+        expr: 100 - avg by (host) (rate(node_cpu_seconds_total{mode="idle"}[2m])) * 100 > 90
+        for: 2m
+        labels:
+          severity: warning
+          category: performance
+          remediation: none
+        annotations:
+          summary: "CPU > 90 % sur {{ $labels.host }}"
+
+      - alert: HoteMemoireSaturee
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 90
+        for: 2m
+        labels:
+          severity: warning
+          category: performance
+          remediation: none
+        annotations:
+          summary: "Mémoire > 90 % sur {{ $labels.host }}"
+
+      - alert: HoteDisquePlein
+        expr: (1 - node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          category: infra
+          remediation: none
+        annotations:
+          summary: "Disque / rempli à plus de 85 % sur {{ $labels.host }}"

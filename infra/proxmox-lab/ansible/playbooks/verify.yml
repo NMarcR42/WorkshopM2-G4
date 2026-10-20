@@ -1,0 +1,65 @@
+# Recette de l'infrastructure : ansible-playbook playbooks/verify.yml
+- name: Recette de la plateforme
+  hosts: ops
+  gather_facts: false
+  vars:
+    obs: "http://{{ vm_ips.obs }}"
+  tasks:
+    - name: Composants d'observabilité prêts
+      ansible.builtin.uri:
+        url: "{{ item }}"
+        status_code: 200
+      loop:
+        - "{{ obs }}:9090/-/ready"
+        - "{{ obs }}:9093/-/ready"
+        - "{{ obs }}:3100/ready"
+        - "{{ obs }}:3000/api/health"
+      register: ready
+      until: ready.status == 200
+      retries: 6
+      delay: 5
+
+    - name: Cibles Prometheus
+      ansible.builtin.uri:
+        url: "{{ obs }}:9090/api/v1/targets?state=active"
+        return_content: true
+      register: targets
+
+    - name: Cibles en échec
+      ansible.builtin.debug:
+        msg: "{{ targets.json.data.activeTargets | selectattr('health', 'ne', 'up') | map(attribute='scrapeUrl') | list }}"
+
+    - name: Le SI répond via le WAF
+      ansible.builtin.uri:
+        url: "{{ probe_base_url }}{{ item.path }}"
+        status_code: 200
+        validate_certs: false
+      loop: "{{ http_probes }}"
+      loop_control:
+        label: "{{ item.service }}"
+
+    - name: Le WAF bloque une injection SQL
+      ansible.builtin.uri:
+        url: "{{ probe_base_url }}/api/payments?id=1%27%20OR%20%271%27=%271"
+        status_code: 403
+        validate_certs: false
+
+    - name: Journaux reçus par Loki (5 dernières minutes, par VM)
+      ansible.builtin.uri:
+        url: "{{ obs }}:3100/loki/api/v1/query?query={{ loki_query | urlencode }}"
+        return_content: true
+      vars:
+        loki_query: 'sum by (host) (count_over_time({job=~"docker|journal"}[5m]))'
+      register: loki
+
+    - name: Volume de logs par VM
+      ansible.builtin.debug:
+        msg: "{{ loki.json.data.result | map(attribute='metric.host') | zip(loki.json.data.result | map(attribute='value') | map('last')) | list }}"
+
+    - name: Le compte remediator ne peut exécuter que ra-remediate
+      ansible.builtin.command: >-
+        ssh -i {{ base_dir }}/ops/keys/remediator_ed25519 -o BatchMode=yes
+        -o StrictHostKeyChecking=accept-new remediator@{{ vm_ips.app }}
+        "sudo -n /usr/local/sbin/ra-remediate status && ! sudo -n docker ps 2>/dev/null"
+      become: true
+      changed_when: false

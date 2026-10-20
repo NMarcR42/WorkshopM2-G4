@@ -1,0 +1,53 @@
+# Règles Loki (fonction SIEM / SOC) — évaluées sur les journaux centralisés
+groups:
+  - name: siem
+    interval: 5s
+    rules:
+      - alert: AttaqueApplicativeBloqueeParWAF
+        expr: |
+          sum by (host, client_ip) (count_over_time({job="docker", service="waf"}
+            |= "ModSecurity: Access denied"
+            | regexp `\[client (?P<client_ip>[0-9.]+)\]`
+            | client_ip != "" [1m])) > 10
+        labels:
+          severity: high
+          category: security
+          remediation: block_ip
+          service: waf
+        annotations:
+          summary: "{{ $labels.client_ip }} : plus de 10 requêtes malveillantes bloquées par le WAF en 1 min"
+
+      - alert: RafaleDeRequetes
+        expr: |
+          sum by (host, client_ip) (rate({job="docker", service="waf"}
+            |~ `"(GET|POST|PUT|PATCH|DELETE) `
+            | regexp `^\S+ (?P<client_ip>[0-9.]+) `
+            | client_ip != "" [30s])) > 50
+        for: 5s
+        labels:
+          severity: high
+          category: security
+          remediation: block_ip
+          service: waf
+        annotations:
+          summary: "{{ $labels.client_ip }} : plus de 50 requêtes/s sur le WAF (déni de service probable)"
+
+      - alert: TentativesConnexionSSH
+        expr: |
+          sum by (host) (count_over_time({job="journal", unit="ssh.service"} |~ "Invalid user|Failed|authenticating user" [5m])) > 10
+        labels:
+          severity: warning
+          category: security
+          remediation: none
+        annotations:
+          summary: "Tentatives de connexion SSH répétées sur {{ $labels.host }}"
+
+      - alert: CommandeRemediationRefusee
+        expr: |
+          sum by (host) (count_over_time({job="journal", syslog_identifier="ra-remediate"} |= "REFUS" [5m])) > 0
+        labels:
+          severity: high
+          category: security
+          remediation: none
+        annotations:
+          summary: "Une action de remédiation non autorisée a été demandée sur {{ $labels.host }}"

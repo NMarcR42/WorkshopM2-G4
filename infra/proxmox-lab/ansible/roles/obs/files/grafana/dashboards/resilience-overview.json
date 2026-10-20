@@ -1,0 +1,106 @@
+{
+  "uid": "resilience-overview",
+  "title": "Resilience-Alpha — Vue d'ensemble",
+  "tags": ["resilience-alpha"],
+  "timezone": "browser",
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Disponibilité vue de l'extérieur (via WAF)",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "probe_success{job=~\"blackbox-http|synthetic\"}", "legendFormat": "{{service}} ({{job}})", "instant": true }],
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "value_and_name", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": {
+        "mappings": [{ "type": "value", "options": { "0": { "text": "KO", "color": "red" }, "1": { "text": "OK", "color": "green" } } }],
+        "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] } } }
+    },
+    {
+      "id": 2, "type": "table", "title": "Alertes en cours",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "ALERTS{alertstate=\"firing\"}", "format": "table", "instant": true }],
+      "transformations": [{ "id": "organize", "options": {
+        "excludeByName": { "Time": true, "Value": true, "__name__": true, "alertstate": true, "platform": true, "instance": true, "job": true },
+        "indexByName": { "alertname": 0, "severity": 1, "service": 2, "remediation": 3, "category": 4 } } }]
+    },
+    {
+      "id": 3, "type": "timeseries", "title": "Sondes : succès (1) / échec (0) — avant, pendant, après l'incident",
+      "gridPos": { "x": 0, "y": 5, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "probe_success{job=~\"blackbox-http|synthetic\"}", "legendFormat": "{{service}}" }],
+      "fieldConfig": { "defaults": { "min": 0, "max": 1, "custom": { "lineInterpolation": "stepAfter", "fillOpacity": 15 } } }
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Temps de réponse des sondes",
+      "gridPos": { "x": 12, "y": 5, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "probe_duration_seconds{job=~\"blackbox-http|synthetic\"}", "legendFormat": "{{service}}" }],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Score d'anomalie ML (seuil 0.8)",
+      "gridPos": { "x": 0, "y": 13, "w": 8, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "ra_anomaly_score", "legendFormat": "{{service}}" }],
+      "fieldConfig": { "defaults": { "min": 0, "max": 1,
+        "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.8 }] },
+        "custom": { "thresholdsStyle": { "mode": "line" } } } }
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Requêtes vues par le WAF (lignes de log / s)",
+      "gridPos": { "x": 8, "y": 13, "w": 8, "h": 7 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate({job=\"docker\", service=\"waf\"} |~ \"\\\"(GET|POST|PUT|DELETE) \" [30s]))", "legendFormat": "requêtes" },
+        { "refId": "B", "expr": "sum(rate({job=\"docker\", service=\"waf\"} |= \"ModSecurity: Access denied\" [30s]))", "legendFormat": "bloquées (BunkerWeb / ModSecurity)" }
+      ]
+    },
+    {
+      "id": 7, "type": "table", "title": "Redémarrages de conteneurs (15 min)",
+      "gridPos": { "x": 16, "y": 13, "w": 8, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sort_desc(changes(container_start_time_seconds{name=~\"ra-.*\"}[15m]) > 0)", "format": "table", "instant": true }],
+      "transformations": [{ "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "id": true, "image": true, "job": true, "instance": true, "platform": true } } }]
+    },
+    {
+      "id": 8, "type": "logs", "title": "Actions de remédiation (journal ra-remediate)",
+      "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [{ "refId": "A", "expr": "{job=\"journal\", syslog_identifier=~\"ra-remediate|ra-backup|ra-restore\"}" }],
+      "options": { "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true }
+    },
+    {
+      "id": 9, "type": "logs", "title": "WAF BunkerWeb : requêtes bloquées",
+      "gridPos": { "x": 12, "y": 20, "w": 12, "h": 8 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [{ "refId": "A", "expr": "{job=\"docker\", service=\"waf\"} |= \"ModSecurity: Access denied\"" }],
+      "options": { "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true }
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "CPU par VM",
+      "gridPos": { "x": 0, "y": 28, "w": 8, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "100 - avg by (host) (rate(node_cpu_seconds_total{mode=\"idle\"}[1m])) * 100", "legendFormat": "{{host}}" }],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 } }
+    },
+    {
+      "id": 11, "type": "timeseries", "title": "Mémoire utilisée par VM",
+      "gridPos": { "x": 8, "y": 28, "w": 8, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100", "legendFormat": "{{host}}" }],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 } }
+    },
+    {
+      "id": 12, "type": "stat", "title": "Âge de la dernière sauvegarde (RPO)",
+      "gridPos": { "x": 16, "y": 28, "w": 8, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "time() - ra_backup_last_success_timestamp_seconds", "instant": true }],
+      "fieldConfig": { "defaults": { "unit": "s",
+        "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 600 }, { "color": "red", "value": 900 }] } } },
+      "options": { "colorMode": "background", "graphMode": "none" }
+    }
+  ]
+}
