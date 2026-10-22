@@ -19,3 +19,4 @@ ia/detector/data/raw/
 .DS_Store
 
 .pytest_cache/
+__pycache__/
