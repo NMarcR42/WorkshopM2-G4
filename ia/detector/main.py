@@ -2,7 +2,7 @@
 
 Lit 4 indicateurs dans Prometheus toutes les 5 s, calcule une note 0..1.
 Note >= SEUIL pendant FENETRES_REQUISES mesures consecutives = incident.
-Un seul signal par incident est envoye au service de remediation (format Alertmanager v4).
+Un seul signal par incident est envoye au service de remediation (JSON simple sur /v1/anomalies).
 Le detecteur ne repare rien lui-meme.
 """
 import json
@@ -36,7 +36,8 @@ PROM_URL = os.getenv("PROM_URL", "http://192.168.1.142:9090").rstrip("/")
 # Envoi vers la remediation (jamais de secret dans le code !)
 REMEDIATION_URL = os.getenv("REMEDIATION_URL", "").rstrip("/")  # ex. http://192.168.1.151:8080
 ENGINE_TOKEN = os.getenv("ENGINE_TOKEN", "")                    # jeton Bearer du webhook
-REMEDIATION_ACTION = os.getenv("REMEDIATION_ACTION", "auto")    # auto, restart, isolate, block_ip...
+REMEDIATION_FORMAT = os.getenv("REMEDIATION_FORMAT", "simple")  # "simple" (/v1/anomalies) ou "alertmanager" (/api/v1/alerts)
+REMEDIATION_ACTION = os.getenv("REMEDIATION_ACTION", "restart") # restart, isolate (sans IP) ; block_ip ou auto exigent CLIENT_IP
 REMEDIATION_SERVICE = os.getenv("REMEDIATION_SERVICE", "") or TARGET_SERVICE  # service vise par la remediation
 SCENARIO = os.getenv("SCENARIO", "dos")                         # utilise si action = auto
 CLIENT_IP = os.getenv("CLIENT_IP", "")                          # requis par block_ip / scenario dos
@@ -121,11 +122,22 @@ def calculer_score(m):
     return float(min(1.0, max(0.0, s_if, s_env)))
 
 
-# ---------- Envoi a la remediation (Alertmanager v4) ----------
+# ---------- Envoi a la remediation ----------
 def url_alertes():
-    if REMEDIATION_URL.endswith("/api/v1/alerts"):
+    chemin = "/api/v1/alerts" if REMEDIATION_FORMAT == "alertmanager" else "/v1/anomalies"
+    if REMEDIATION_URL.endswith(chemin):
         return REMEDIATION_URL
-    return REMEDIATION_URL + "/api/v1/alerts"
+    return REMEDIATION_URL + chemin
+
+
+def construire_simple(score):
+    """Format simple du service de remediation : service, remediation, score (+ client_ip)."""
+    corps = {"service": REMEDIATION_SERVICE, "remediation": REMEDIATION_ACTION, "score": round(score, 2)}
+    if REMEDIATION_ACTION == "auto":
+        corps["scenario"] = SCENARIO
+    if CLIENT_IP:
+        corps["client_ip"] = CLIENT_IP
+    return corps
 
 
 def construire_alerte(score, m, anomaly_id):
@@ -166,7 +178,7 @@ def envoyer_anomalie(score, m, anomaly_id):
     try:
         rep = requests.post(
             url_alertes(),
-            json=construire_alerte(score, m, anomaly_id),
+            json=(construire_alerte(score, m, anomaly_id) if REMEDIATION_FORMAT == "alertmanager" else construire_simple(score)),
             headers={"Authorization": f"Bearer {ENGINE_TOKEN}"},
             timeout=5,
         )
@@ -242,14 +254,18 @@ def status():
     }
 
 
-# --- TEMPORAIRE : a retirer avant le rendu final ---
-@app.get("/simulate/attack/on")
-def attaque_on():
-    etat["attaque_simulee"] = True
-    return {"attaque_simulee": True}
+# --- Simulation d'attaque (demo) : DESACTIVEE par defaut ---
+# Pour la demo : lancer le conteneur avec -e ALLOW_SIM=1 (sinon ces routes repondent 404).
+ALLOW_SIM = os.getenv("ALLOW_SIM", "0") == "1"
 
+if ALLOW_SIM:
+    @app.get("/simulate/attack/on")
+    def attaque_on():
+        etat["attaque_simulee"] = True
+        return {"attaque_simulee": True}
 
-@app.get("/simulate/attack/off")
-def attaque_off():
-    etat["attaque_simulee"] = False
-    return {"attaque_simulee": False}
+    @app.get("/simulate/attack/off")
+    def attaque_off():
+        etat["attaque_simulee"] = False
+        return {"attaque_simulee": False}
+    
