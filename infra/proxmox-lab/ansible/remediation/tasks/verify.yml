@@ -1,0 +1,38 @@
+# Vérification post-remédiation : un conteneur relancé ne suffit pas,
+# on contrôle le service tel qu'un utilisateur le voit (via le WAF).
+- name: "Vérification — {{ verify_service }} répond via le WAF"
+  ansible.builtin.uri:
+    url: "{{ probe_base_url }}{{ health_paths[verify_service] | default('/') }}"
+    status_code: 200
+    timeout: 5
+    validate_certs: false
+  register: health
+  until: health.status == 200
+  retries: 30
+  delay: 2
+  delegate_to: localhost
+
+- name: Vérification — une transaction fictive aboutit
+  ansible.builtin.uri:
+    url: "{{ probe_base_url }}{{ synthetic_path }}"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ lookup('ansible.builtin.file', keys_dir ~ '/synthetic_probe_token') }}"
+    body_format: json
+    body: { amount: 1.00, currency: EUR, label: post-remediation-check }
+    status_code: [200, 201]
+    timeout: 8
+    validate_certs: false
+  register: tx
+  until: tx.status in [200, 201]
+  retries: 10
+  delay: 3
+  delegate_to: localhost
+  when: synthetic_check | bool
+
+- name: Résultat
+  ansible.builtin.debug:
+    msg: >-
+      SERVICE RÉTABLI — {{ verify_service }} répond HTTP {{ health.status }}
+      après {{ health.attempts | default(1) }} tentative(s)
+      {{ '; transaction fictive OK' if (synthetic_check | bool) else '' }}

@@ -1,0 +1,97 @@
+# Stack d'observabilité — vm-obs (géré par Ansible)
+name: obs
+
+networks:
+  obs:
+    name: ra_obs
+
+volumes:
+  prometheus-data:
+  alertmanager-data:
+  loki-data:
+  grafana-data:
+
+services:
+  prometheus:
+    image: {{ images.prometheus }}
+    container_name: ra-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time={{ prometheus_retention }}
+      - --web.enable-remote-write-receiver
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks: [obs]
+    restart: unless-stopped
+    mem_limit: 1g
+
+  alertmanager:
+    image: {{ images.alertmanager }}
+    container_name: ra-alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./alertmanager:/etc/alertmanager:ro
+      - ./secrets/alert_webhook_token:/run/secrets/alert_webhook_token:ro
+      - alertmanager-data:/alertmanager
+    ports:
+      - "9093:9093"
+    networks: [obs]
+    restart: unless-stopped
+    mem_limit: 128m
+
+  blackbox:
+    image: {{ images.blackbox }}
+    container_name: ra-blackbox
+    command:
+      - --config.file=/etc/blackbox/blackbox.yml
+    volumes:
+      - ./blackbox:/etc/blackbox:ro
+      - ./secrets/synthetic_probe_token:/run/secrets/synthetic_probe_token:ro
+    networks: [obs]
+    restart: unless-stopped
+    mem_limit: 64m
+
+  loki:
+    image: {{ images.loki }}
+    container_name: ra-loki
+    command:
+      - -config.file=/etc/loki/loki.yml
+    volumes:
+      - ./loki/loki.yml:/etc/loki/loki.yml:ro
+      - ./loki/rules:/etc/loki/rules:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    networks: [obs]
+    restart: unless-stopped
+    mem_limit: 1g
+
+  grafana:
+    image: {{ images.grafana }}
+    container_name: ra-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/resilience-overview.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./secrets/grafana_admin_password:/run/secrets/grafana_admin_password:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks: [obs]
+    depends_on: [prometheus, loki]
+    restart: unless-stopped
+    mem_limit: 512m

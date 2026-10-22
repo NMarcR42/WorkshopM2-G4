@@ -19,3 +19,8 @@ ia/detector/data/raw/
 .DS_Store
 
 .pytest_cache/
+
+# Reconnaissance faciale : base locale (empreintes, hachés) et secrets ESP
+ia/data/face/
+esp8266-led/include/secrets.h
+.pio/

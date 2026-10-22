@@ -257,3 +257,23 @@ def test_http_seules_les_alertes_firing_agissent(client):
     assert r.status_code == 200
     time.sleep(0.2)
     assert client.get("/v1/incidents", headers=AUTH).json() == []
+
+
+def test_sans_canary_la_verification_est_deleguee_au_playbook(tmp_path):
+    s = dataclasses.replace(base_settings, incidents_dir=str(tmp_path), canary_url="", action_cooldown_s=0, cooldown_s=0)
+    eng = Engine(s, Journal(str(tmp_path)), FakeExecutor())
+    inc, _ = eng.submit(req_of(remediation="restart"))
+    assert wait_closed(eng, inc)["resolved_by"] == "restart"  # pas d'escalade à tort après une action réussie
+    # ...mais une vérification déléguée ne peut pas écarter une alerte « auto » comme faux positif
+    inc2, _ = eng.submit(req_of(name="n2", remediation="auto", scenario="injection"))
+    assert wait_closed(eng, inc2)["resolved_by"] == "restart"
+
+
+def test_unblock_ip_n_exige_pas_le_marqueur(monkeypatch, tmp_path):
+    (tmp_path / "remediation").mkdir()
+    (tmp_path / "remediation" / "unblock_ip.yml").write_text("---\n")
+    fake = FakeRun(rc=0, out="PLAY RECAP ok")
+    monkeypatch.setattr(subprocess, "run", fake)
+    ex = AnsibleExecutor(dataclasses.replace(base_settings, ansible_workdir=str(tmp_path), ansible_inventory=""))
+    ex.unblock(["203.0.113.9"], [])
+    assert fake.cmd[1] == "remediation/unblock_ip.yml"

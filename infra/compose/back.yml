@@ -13,6 +13,8 @@ secrets:
     file: ./.secrets/db_password
   jwt_secret:
     file: ./.secrets/jwt_secret
+  face_service_key:                      # meme valeur que SERVICE_KEY cote IA (serveur de reconnaissance faciale)
+    file: ./.secrets/face_service_key
   canary_password:                       # meme valeur que cote canary (ops) : auth en derive le hash du compte "canary"
     file: ./.secrets/canary_password
   synthetic_probe_token:                 # meme valeur que cote canary (ops) : jeton de la transaction de controle
@@ -40,7 +42,7 @@ services:
     build: ./dev/api
     networks: [app, obs]                 # obs : Prometheus scrute /metrics (mono-hote ; multi-machines : par IP)
     ports:
-      - "${BACK_BIND:-127.0.0.1}:${API_PORT:-8000}:8000"   # multi-machines : IP privee, filtree au seul WAF
+      - "${BACK_BIND:-0.0.0.0}:${API_PORT:-8000}:8000"   # multi-machines : IP privee, filtree au seul WAF
     environment:
       DB_HOST: db
       DB_NAME: payments
@@ -61,9 +63,13 @@ services:
     build: ./dev/auth
     networks: [app]
     ports:
-      - "${BACK_BIND:-127.0.0.1}:${AUTH_PORT:-8001}:8000"
+      - "${BACK_BIND:-0.0.0.0}:${AUTH_PORT:-8001}:8000"
     environment:
       JWT_SECRET_FILE: /run/secrets/jwt_secret
       CANARY_PASSWORD_FILE: /run/secrets/canary_password   # cree le compte "canary" de la sonde
-    secrets: [jwt_secret, canary_password]   # pas de base de donnees : auth n'a besoin que des secrets de signature et du canary
+      # Controle facial : desactive par defaut (auth se comporte comme avant). Passer FACE_ENFORCE=true dans .env pour l'exiger.
+      FACE_ENFORCE: ${FACE_ENFORCE:-false}
+      FACE_SERVICE_URL: ${FACE_SERVICE_URL:-}   # ex. http://<ip-pc-hote>:8600 ; vide = pas de service IA
+      FACE_SERVICE_KEY_FILE: /run/secrets/face_service_key
+    secrets: [jwt_secret, canary_password, face_service_key]   # pas de base de donnees : auth n'a besoin que des secrets de signature et du canary
     restart: unless-stopped

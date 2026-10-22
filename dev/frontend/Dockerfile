@@ -8,7 +8,11 @@ COPY . .
 # Ils sont figés à la construction (Vite) ; ne les changer que si le WAF route autrement.
 ARG VITE_API_BASE=/api
 ARG VITE_AUTH_BASE=/auth
-ENV VITE_API_BASE=$VITE_API_BASE VITE_AUTH_BASE=$VITE_AUTH_BASE
+# Reconnaissance faciale : VITE_FACE_MODE = api (service IA) | mock (simulation) | off (plan B global).
+ARG VITE_FACE_MODE=mock
+ARG VITE_FACE_BASE=/face
+ENV VITE_API_BASE=$VITE_API_BASE VITE_AUTH_BASE=$VITE_AUTH_BASE \
+    VITE_FACE_MODE=$VITE_FACE_MODE VITE_FACE_BASE=$VITE_FACE_BASE
 RUN npm run build
 
 # Étape 2 : fichiers statiques servis par nginx. Le WAF est devant (voir doc/ARCHITECTURE.md).

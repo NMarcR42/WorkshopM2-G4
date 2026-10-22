@@ -2,10 +2,10 @@ import time
 from contextlib import asynccontextmanager
 
 import jwt
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from . import observability
+from . import face, observability
 from .config import settings
 from .observability import LOGINS, client_ip, log
 from .passwords import DUMMY_HASH, verify_password
@@ -42,12 +42,31 @@ class TokenOut(BaseModel):
 # pour le front de dev et le WAF local, qui retirent encore le préfixe.
 @app.post("/auth/login", response_model=TokenOut)
 @app.post("/login", response_model=TokenOut, include_in_schema=False)
-def login(body: LoginIn, request: Request):
+def login(body: LoginIn, request: Request, x_face_token: str | None = Header(default=None)):
     """Échange identifiant + mot de passe contre un JWT que l'API vérifie elle-même."""
     user = users.get(body.username)
+    # Le compte technique "canary" (sonde de vérification) n'a pas de visage : il est exempté du contrôle facial.
+    need_face = settings.face_enforce and not (user and user["role"] == "canary")
+    if need_face and not x_face_token:
+        # Refus avant tout calcul de hash : sans visage reconnu, inutile de tester un mot de passe.
+        log.warning("login_face_missing", extra={"extra_fields": {
+            "event": "login_face_missing", "username": body.username[:50], "client_ip": client_ip(request)}})
+        raise HTTPException(403, "Vérification faciale requise")
     # On vérifie toujours un hash, même si l'utilisateur n'existe pas (voir DUMMY_HASH).
-    valid = verify_password(body.password, user["password_hash"] if user else DUMMY_HASH)
-    if not user or not valid:
+    valid = verify_password(body.password, user["password_hash"] if user else DUMMY_HASH) and bool(user)
+    if need_face:
+        # Valide le token auprès de l'IA (usage unique, lié à l'utilisateur) et lui donne le résultat du mot de passe.
+        try:
+            face.confirm(body.username, x_face_token, valid)
+        except face.FaceRejected:
+            log.warning("login_face_rejected", extra={"extra_fields": {
+                "event": "login_face_rejected", "username": body.username[:50], "client_ip": client_ip(request)}})
+            raise HTTPException(403, "Vérification faciale absente ou expirée, recommencez") from None
+        except face.FaceUnavailable as e:
+            log.error("login_face_unavailable", extra={"extra_fields": {"event": "login_face_unavailable", "error": str(e)}})
+            # Fail closed : on ne délivre pas de JWT sans pouvoir vérifier. Le plan B se décide à l'extérieur (FACE_ENFORCE=false).
+            raise HTTPException(503, "Service de reconnaissance faciale indisponible") from None
+    if not valid:
         LOGINS.labels("failed").inc()
         # Journal exploité par le SIEM (rafales d'échecs = force brute). Jamais le mot de passe.
         log.warning("login_failed", extra={"extra_fields": {

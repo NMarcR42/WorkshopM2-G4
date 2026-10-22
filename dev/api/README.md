@@ -28,6 +28,8 @@ Contrat infra : toutes les routes `/v1/...` sont servies sous `/api` (préfixe c
 
 **Transaction de contrôle** : `Authorization: Bearer <synthetic_probe_token>` (secret `SYNTHETIC_PROBE_TOKEN_FILE`, route fermée en 503 sans secret), corps `{"amount":1.0,"currency":"EUR","label":"..."}`. Elle appelle `AUTH_URL/auth/health`, puis fait un vrai virement entre `ACC-CANARY-A` et `ACC-CANARY-B` (sens inversé si A est vide) : `200 {"status":"ok",...}`. Le canary la joue en plus de son parcours dès qu'il a `SYNTHETIC_PROBE_TOKEN(_FILE)`.
 
+**Utilisation par le front** : `GET /v1/accounts` (comptes), `GET /v1/transactions?limit=50` (historique ; `limit` ≤ 100) et `POST /v1/transactions` avec `Idempotency-Key` (boutique et virement libre). Une transaction n'a pas de champ libellé : le front garde le nom de l'article côté navigateur.
+
 Documentation interactive : `/docs`. Comptes de départ : `ACC-ALICE`, `ACC-BOB`, `ACC-MERCHANT`, `ACC-CANARY-A`, `ACC-CANARY-B`.
 
 ## Contrat avec `auth`

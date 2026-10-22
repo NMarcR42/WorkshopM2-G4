@@ -1,0 +1,74 @@
+- name: Arborescence de la stack d'observabilité
+  ansible.builtin.file:
+    path: "{{ base_dir }}/obs/{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - prometheus/rules
+    - alertmanager
+    - blackbox
+    - loki/rules/fake
+    - grafana/provisioning/datasources
+    - grafana/provisioning/dashboards
+    - grafana/dashboards
+    - secrets
+
+- name: Secrets (lisibles uniquement par les conteneurs concernés)
+  ansible.builtin.copy:
+    dest: "{{ base_dir }}/obs/secrets/{{ item.name }}"
+    content: "{{ item.value }}"
+    owner: "{{ item.uid }}"
+    mode: "0400"
+  loop:
+    - { name: grafana_admin_password, value: "{{ grafana_admin_password }}", uid: 472 }
+    - { name: alert_webhook_token, value: "{{ alert_webhook_token }}", uid: 65534 }
+    - { name: synthetic_probe_token, value: "{{ synthetic_probe_token }}", uid: 65534 }
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+  register: obs_secrets
+
+- name: Configurations générées
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ base_dir }}/obs/{{ item.dest }}"
+    mode: "0644"
+  loop:
+    - { src: docker-compose.yml.j2, dest: docker-compose.yml }
+    - { src: prometheus.yml.j2, dest: prometheus/prometheus.yml }
+    - { src: alertmanager.yml.j2, dest: alertmanager/alertmanager.yml }
+    - { src: blackbox.yml.j2, dest: blackbox/blackbox.yml }
+    - { src: loki.yml.j2, dest: loki/loki.yml }
+  register: obs_templates
+
+- name: Règles d'alerte et provisioning Grafana
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ base_dir }}/obs/{{ item.dest }}"
+    mode: "0644"
+  loop:
+    - { src: prometheus-rules/, dest: prometheus/rules/ }
+    - { src: loki-rules/, dest: loki/rules/fake/ }
+    - { src: grafana/datasources.yml, dest: grafana/provisioning/datasources/datasources.yml }
+    - { src: grafana/dashboards.yml, dest: grafana/provisioning/dashboards/dashboards.yml }
+    - { src: grafana/dashboards/, dest: grafana/dashboards/ }
+  register: obs_files
+
+- name: Démarrage de la stack d'observabilité
+  community.docker.docker_compose_v2:
+    project_src: "{{ base_dir }}/obs"
+    state: present
+    pull: missing
+  register: obs_up
+
+# NB : surtout pas "docker kill -s HUP" : Docker considère alors le conteneur comme
+# arrêté manuellement et ne le relance plus au démarrage de la VM.
+- name: Rechargement des configurations (sans redémarrer les conteneurs)
+  ansible.builtin.command: "{{ item }}"
+  loop:
+    - docker exec ra-prometheus kill -HUP 1
+    - docker exec ra-alertmanager kill -HUP 1
+    - docker exec ra-blackbox kill -HUP 1
+    - docker restart ra-loki
+  when: (obs_templates.changed or obs_files.changed or obs_secrets.changed) and not obs_up.changed
+  changed_when: true

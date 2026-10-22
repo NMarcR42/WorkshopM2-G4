@@ -1,0 +1,72 @@
+# Prometheus — vm-obs (géré par Ansible)
+global:
+  scrape_interval: {{ prometheus_scrape_interval }}
+  evaluation_interval: {{ prometheus_eval_interval }}
+  external_labels:
+    platform: {{ project_name }}
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels: { host: vm-obs }
+
+  - job_name: stack-obs
+    static_configs:
+      - targets: ["alertmanager:9093", "loki:3100", "grafana:3000", "blackbox:9115"]
+        labels: { host: vm-obs }
+
+{% for job, port in [('node', 9100), ('cadvisor', 8081), ('alloy', 12345)] %}
+  - job_name: {{ job }}
+    static_configs:
+{% for h in groups['all'] %}
+      - targets: ["{{ hostvars[h].ansible_host }}:{{ port }}"]
+        labels: { host: {{ h }} }
+{% endfor %}
+
+{% endfor %}
+  # Détecteur d'anomalies ML (pilier IA) — expose ra_anomaly_score
+  - job_name: ml-detector
+    static_configs:
+      - targets: ["{{ vm_ips.ia }}:{{ ml_detector_port }}"]
+        labels: { host: vm-ia }
+
+  # Sondes "boîte noire" : on teste le service comme un utilisateur, en passant par le WAF
+  - job_name: blackbox-http
+    scrape_interval: {{ prometheus_scrape_interval }}
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+{% for p in http_probes %}
+      - targets: ["{{ probe_base_url }}{{ p.path }}"]
+        labels: { service: {{ p.service }} }
+{% endfor %}
+    relabel_configs: &blackbox_relabel
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+{% if synthetic_probe_enabled %}
+
+  # Transaction de paiement fictive de bout en bout (auth -> api -> base)
+  - job_name: synthetic
+    scrape_interval: {{ prometheus_scrape_interval }}
+    metrics_path: /probe
+    params:
+      module: [synthetic_payment]
+    static_configs:
+      - targets: ["{{ probe_base_url }}{{ synthetic_probe_path }}"]
+        labels: { service: api }
+    relabel_configs: *blackbox_relabel
+{% endif %}

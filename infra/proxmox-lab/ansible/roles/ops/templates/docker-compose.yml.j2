@@ -1,0 +1,41 @@
+# Stack vm-ops (géré par Ansible)
+#  - vault        :8200  secrets applicatifs (accès limité à vm-app par le pare-feu)
+#  - remediation  :8080  récepteur de remédiation (stand-in infra ; le DEV le remplace)
+#  - dashboard    :5173  supervision React/Tailwind (pilier DEV)
+name: ops
+
+volumes:
+  vault-data:
+
+services:
+  vault:
+    image: {{ images.vault }}
+    container_name: ra-vault
+    command: ["server"]
+    environment:
+      SKIP_SETCAP: "true"
+      VAULT_ADDR: http://127.0.0.1:8200
+    ports:
+      - "8200:8200"
+    volumes:
+      - ./vault/vault.hcl:/vault/config/vault.hcl:ro
+      - vault-data:/vault/file
+    restart: unless-stopped
+    mem_limit: 256m
+
+  # Récepteur de remédiation minimal (stand-in infra). Reçoit les webhooks Alertmanager
+  # et lance les playbooks via la clé remediator. Le moteur du DEV le remplacera à l'identique.
+  remediation:
+    image: ra/remediation-runner:latest
+    container_name: ra-remediation
+    command: ["python3", "/work/remediation/receiver.py"]
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+    volumes:
+      - {{ base_dir }}/repo/ansible:/work:ro
+      - {{ base_dir }}/ops/keys:/opt/resilience/ops/keys:ro
+      - {{ base_dir }}/ops/keys/alert_webhook_token:/run/secrets/alert_webhook_token:ro
+    restart: unless-stopped
+    mem_limit: 256m

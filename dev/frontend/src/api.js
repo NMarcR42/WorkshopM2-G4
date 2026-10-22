@@ -28,9 +28,9 @@ function readDetail(data) {
   return null
 }
 
-async function request(base, path, { method = 'GET', token, body, headers = {} } = {}) {
+async function request(base, path, { method = 'GET', token, body, headers = {}, timeoutMs = TIMEOUT_MS } = {}) {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
   let res
   try {
     res = await fetch(base + path, {
@@ -61,8 +61,39 @@ async function request(base, path, { method = 'GET', token, body, headers = {} }
   throw new ApiError('rejected', detail ?? `Requête refusée (${res.status}).`, res.status)
 }
 
-export const login = (username, password) =>
-  request(AUTH_BASE, '/login', { method: 'POST', body: { username, password } }).then((r) => r.data)
+// Reconnaissance faciale (serveur du PC hôte, port 8600, voir ia/README-face.md). Mode choisi à la construction :
+//  - 'api'  : appel réel à FACE_BASE (le serveur IA lit lui-même la caméra USB : le front n'envoie aucune image) ;
+//  - 'mock' : simulation locale, pour développer sans le serveur IA (affichée comme telle à l'écran) ;
+//  - 'off'  : étape désactivée (plan B global le jour J, sans reconstruire autre chose que le front).
+export const FACE_MODE = import.meta.env.VITE_FACE_MODE ?? 'mock'
+const FACE_BASE = import.meta.env.VITE_FACE_BASE ?? '/face'
+// La caméra reste allumée jusqu'à ~8 s côté serveur : le délai habituel (8 s) couperait trop tôt.
+const FACE_TIMEOUT_MS = Number(import.meta.env.VITE_FACE_TIMEOUT_MS ?? 20000)
+
+// POST /auth/identify {user} -> { ok, token } si reconnu, { ok:false, message, pause_s, bloque_s } sinon.
+// 429 (compte bloqué) et 409 (poste occupé) remontent en ApiError 'rejected' avec le message du serveur ;
+// 503 (caméra introuvable) ou réseau coupé -> ApiError 'unavailable'/'network' (le front bascule en plan B).
+export async function identifyFace(user) {
+  if (FACE_MODE === 'mock') {
+    await new Promise((r) => setTimeout(r, 800))
+    return { verified: true, faceToken: null, message: '', pauseS: 0 }
+  }
+  const { data } = await request(FACE_BASE, '/auth/identify', { method: 'POST', body: { user }, timeoutMs: FACE_TIMEOUT_MS })
+  return {
+    verified: Boolean(data?.ok),
+    faceToken: data?.token ?? null,
+    message: data?.message ?? 'Visage non reconnu.',
+    pauseS: Number(data?.pause_s ?? 0),
+  }
+}
+
+// faceToken : preuve de l'étape visage (null en plan B). Envoyé en en-tête, ignoré tant que auth ne l'exige pas.
+export const login = (username, password, faceToken = null) =>
+  request(AUTH_BASE, '/login', {
+    method: 'POST',
+    body: { username, password },
+    headers: faceToken ? { 'X-Face-Token': faceToken } : {},
+  }).then((r) => r.data)
 
 export const getAccounts = (token) => request(API_BASE, '/v1/accounts', { token }).then((r) => r.data)
 

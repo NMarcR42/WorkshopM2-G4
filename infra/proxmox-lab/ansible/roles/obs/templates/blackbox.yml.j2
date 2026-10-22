@@ -1,0 +1,31 @@
+# blackbox-exporter — vm-obs (géré par Ansible)
+modules:
+  http_2xx:
+    prober: http
+    timeout: 5s
+    http:
+      method: GET
+      valid_status_codes: [200]
+      preferred_ip_protocol: ip4
+      follow_redirects: true
+      tls_config:
+        insecure_skip_verify: true   # certificat auto-signé du WAF (limite du prototype)
+
+  # Contrat avec le dev : POST {{ synthetic_probe_path }} exécute une transaction fictive
+  # complète et répond 200 {"status":"ok", ...}
+  synthetic_payment:
+    prober: http
+    timeout: 8s
+    http:
+      method: POST
+      headers:
+        Content-Type: application/json
+      body: '{"amount": 1.00, "currency": "EUR", "label": "synthetic-probe"}'
+      valid_status_codes: [200, 201]
+      fail_if_body_not_matches_regexp: ['"status"\s*:\s*"ok"']
+      preferred_ip_protocol: ip4
+      tls_config:
+        insecure_skip_verify: true
+      authorization:
+        type: Bearer
+        credentials_file: /run/secrets/synthetic_probe_token

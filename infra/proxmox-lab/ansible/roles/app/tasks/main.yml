@@ -1,0 +1,40 @@
+- name: Arborescence de la stack applicative
+  ansible.builtin.file:
+    path: "{{ base_dir }}/app/{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - gateway
+    - secrets
+
+- name: Secret PostgreSQL
+  ansible.builtin.copy:
+    dest: "{{ base_dir }}/app/secrets/postgres_password"
+    content: "{{ postgres_password }}"
+    mode: "0444"   # lu par postgres, l'exporter et les services ; le dossier n'est pas exposé
+  no_log: true
+
+- name: Fichiers de configuration
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ base_dir }}/app/{{ item.dest }}"
+    mode: "0644"
+  loop:
+    - { src: docker-compose.yml.j2, dest: docker-compose.yml }
+    - { src: gateway.conf.j2, dest: gateway/default.conf }
+  register: app_conf
+
+- name: Démarrage de la stack applicative
+  community.docker.docker_compose_v2:
+    project_src: "{{ base_dir }}/app"
+    state: present
+    pull: missing
+    remove_orphans: true
+    wait: true
+    wait_timeout: 180
+  register: app_up
+
+- name: Rechargement du gateway si sa configuration a changé
+  ansible.builtin.command: docker exec ra-gateway nginx -s reload
+  when: app_conf.results[1].changed and not app_up.changed
+  changed_when: true

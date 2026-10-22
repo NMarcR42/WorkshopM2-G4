@@ -82,8 +82,9 @@ class Engine:
     def _remediate(self, inc: dict, req: RemediationRequest) -> tuple[str, str | None]:
         # Garde anti faux positif : décision « auto » du ML, rien à bloquer et service sain -> on ne touche à rien.
         if req.auto and req.action != "block_ip" and self.s.auto_verify_first:
-            ok, _ = self._verify(inc)
-            if ok:
+            ok, res = self._verify(inc)
+            # Une vérification déléguée au playbook ne dit rien de l'état AVANT action : elle ne peut pas écarter l'alerte.
+            if ok and not res.get("delegated"):
                 return "RESOLVED", "none"
 
         # L'action demandée par l'alerte d'abord, puis escalade. On s'arrête dès que le canary prouve la reprise.
@@ -116,6 +117,12 @@ class Engine:
     # ---------- vérification (preuve de reprise) ----------
 
     def _verify(self, inc: dict) -> tuple[bool, dict]:
+        if not self.s.canary_url:
+            # Pas de canary (VM-OPS) : la preuve métier est celle du playbook (code 0 + « SERVICE RÉTABLI », qui rejoue
+            # une transaction via le WAF). Sans cela chaque incident serait escaladé à tort après une action réussie.
+            result = {"ok": True, "delegated": True, "detail": "vérification métier faite par le playbook"}
+            self.journal.add(inc, "verify", ok=True, detail=result["detail"])
+            return True, result
         try:
             r = httpx.post(f"{self.s.canary_url}/verify", timeout=self.s.verify_timeout_s)
             result = r.json() if r.status_code == 200 else {"ok": False, "detail": f"canary HTTP {r.status_code}"}

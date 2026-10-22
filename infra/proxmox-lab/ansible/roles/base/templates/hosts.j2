@@ -1,0 +1,6 @@
+# Géré par Ansible (rôle base)
+127.0.0.1   localhost
+127.0.1.1   {{ inventory_hostname }}
+{% for h in groups['all'] %}
+{{ hostvars[h].ansible_host }}   {{ h }}
+{% endfor %}

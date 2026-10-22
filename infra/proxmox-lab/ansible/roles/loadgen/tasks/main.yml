@@ -1,0 +1,23 @@
+# Générateur de trafic légitime de fond — donne au modèle ML une base "normale" qui varie.
+# Déployé sur vm-ops. À laisser tourner : pendant l'attaque, l'anomalie se détache de cette base.
+- name: Répertoire du générateur de trafic
+  ansible.builtin.file:
+    path: "{{ base_dir }}/loadgen"
+    state: directory
+    mode: "0755"
+
+- name: Script de trafic + stack
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ base_dir }}/loadgen/{{ item.dest }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { src: traffic.sh.j2, dest: traffic.sh, mode: "0755" }
+    - { src: docker-compose.yml.j2, dest: docker-compose.yml, mode: "0644" }
+  register: loadgen_files
+
+- name: Démarrage du générateur
+  community.docker.docker_compose_v2:
+    project_src: "{{ base_dir }}/loadgen"
+    state: "{{ 'present' if loadgen_enabled | default(true) else 'absent' }}"
+    recreate: "{{ 'always' if loadgen_files.changed else 'auto' }}"

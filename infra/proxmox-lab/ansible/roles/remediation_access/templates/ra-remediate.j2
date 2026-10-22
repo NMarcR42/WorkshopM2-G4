@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# ra-remediate — liste blanche des actions de remédiation sur vm-app (géré par Ansible)
+# Chaque appel est tracé dans le journal (identifiant ra-remediate) puis centralisé dans Loki.
+#
+#   ra-remediate status
+#   ra-remediate restart   <service>
+#   ra-remediate recreate  <service>    # repart d'un conteneur neuf (image saine)
+#   ra-remediate isolate   <service>    # preuve (image + logs), coupure réseau, puis conteneur neuf
+#   ra-remediate block-ip  <ipv4> [durée_s]   # bannissement BunkerWeb (défaut 24 h)
+#   ra-remediate unblock-ip <ipv4>
+#   ra-remediate bans                   # bannissements BunkerWeb en cours
+#   ra-remediate restore-db [latest|db-AAAAMMJJ-HHMMSS.dump]
+#   ra-remediate redeploy               # reconverge toute la stack applicative
+set -euo pipefail
+
+APP_DIR={{ base_dir }}/app
+FORENSICS=/var/lib/resilience/forensics
+SERVICES=" {{ remediable_services | join(' ') }} "
+CALLER=${SUDO_USER:-$(id -un)}
+
+log()  { logger -t ra-remediate -p authpriv.notice "user=$CALLER $*"; echo "$*"; }
+deny() { log "REFUS $*"; exit 2; }
+dc()   { docker compose --project-directory "$APP_DIR" "$@"; }
+
+need_service() {
+  [[ -n "${1:-}" && "$SERVICES" == *" $1 "* ]] || deny "service non autorisé: '${1:-}'"
+}
+need_ip() {
+  [[ "${1:-}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || deny "adresse IP invalide: '${1:-}'"
+  case "$1" in
+    {{ vm_ips.values() | join('|') }}|127.*) deny "blocage d'une adresse interne refusé: $1" ;;
+  esac
+}
+# bwcli écrit tout sur stderr : on garde le résultat, sans ses logs internes ni ses couleurs
+bwcli() {
+  local out rc=0
+  out=$(docker exec ra-bw-scheduler bwcli "$@" 2>&1) || rc=$?
+  printf '%s\n' "$out" | grep -v '^\[20' | sed 's/\x1b\[[0-9;]*m//g' | grep -v '^\s*$' || true
+  return $rc
+}
+
+ACTION=${1:-}
+case "$ACTION" in
+  status)
+    dc ps --format 'table {{ '{{' }}.Service{{ '}}' }}\t{{ '{{' }}.State{{ '}}' }}\t{{ '{{' }}.Status{{ '}}' }}'
+    ;;
+  restart)
+    need_service "${2:-}"; log "restart $2"
+    dc restart "$2"
+    ;;
+  recreate)
+    need_service "${2:-}"; log "recreate $2"
+    dc up -d --no-deps --force-recreate "$2"
+    ;;
+  isolate)
+    need_service "${2:-}"
+    TS=$(date +%Y%m%d-%H%M%S)
+    CID=$(dc ps -q "$2")
+    [[ -n "$CID" ]] || deny "aucun conteneur pour $2"
+    log "isolate $2 ($CID) : conservation des preuves"
+    docker commit -p=false "$CID" "forensic/$2:$TS" > /dev/null
+    docker logs --timestamps "$CID" > "$FORENSICS/$2-$TS.log" 2>&1 || true
+    docker inspect "$CID" > "$FORENSICS/$2-$TS.inspect.json"
+    for NET in $(docker inspect -f '{{ '{{' }}range $k, $v := .NetworkSettings.Networks{{ '}}' }}{{ '{{' }}$k{{ '}}' }} {{ '{{' }}end{{ '}}' }}' "$CID"); do
+      docker network disconnect -f "$NET" "$CID"
+    done
+    log "isolate $2 : réseau coupé, redémarrage depuis l'image d'origine"
+    dc up -d --no-deps --force-recreate "$2"
+    ;;
+  block-ip)
+    need_ip "${2:-}"
+    bwcli ban "$2" -exp "${3:-86400}" -reason "ra-remediate (${CALLER})"
+    log "block-ip $2 (bannissement BunkerWeb ${3:-86400} s)"
+    ;;
+  unblock-ip)
+    need_ip "${2:-}"
+    bwcli unban "$2"
+    log "unblock-ip $2"
+    ;;
+  bans)
+    bwcli bans
+    ;;
+  restore-db)
+    log "restore-db ${2:-latest}"
+    /usr/local/sbin/ra-restore-db "${2:-latest}"
+    ;;
+  redeploy)
+    log "redeploy stack app"
+    dc up -d --remove-orphans
+    ;;
+  *)
+    deny "action inconnue: '$ACTION'"
+    ;;
+esac

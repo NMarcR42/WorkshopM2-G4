@@ -1,0 +1,7 @@
+# Collections utilisées (déjà fournies par le paquet Debian "ansible" 12)
+collections:
+  - name: community.docker
+  - name: community.general
+  - name: community.crypto
+  - name: community.sops
+  - name: ansible.posix

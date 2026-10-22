@@ -1,0 +1,41 @@
+# Compromission de l'hôte vm-app : retour au snapshot Proxmox "baseline-sain".
+# Jeton API dédié : droits VM.Snapshot.Rollback / VM.PowerMgmt / VM.Audit sur la VM 200 uniquement.
+# ansible-playbook rollback_vm.yml
+- name: Remédiation — rollback de vm-app vers le snapshot sain
+  hosts: localhost
+  gather_facts: false
+  vars:
+    token: "{{ lookup('ansible.builtin.file', keys_dir ~ '/pve_token') }}"
+    pve_auth: &pve_auth
+      api_host: "{{ pve.host }}"
+      api_user: "{{ token.split('!')[0] }}"
+      api_token_id: "{{ token.split('!')[1].split('=')[0] }}"
+      api_token_secret: "{{ token.split('=', 1)[1] }}"
+      validate_certs: false
+  tasks:
+    - name: Rollback du snapshot
+      community.proxmox.proxmox_snap:
+        <<: *pve_auth
+        vmid: "{{ pve.app_vmid }}"
+        snapname: "{{ pve.snapshot }}"
+        state: rollback
+        timeout: 120
+
+    - name: Démarrage de la VM
+      community.proxmox.proxmox_kvm:
+        <<: *pve_auth
+        node: "{{ pve.node }}"
+        vmid: "{{ pve.app_vmid }}"
+        state: started
+        timeout: 120
+
+    - name: Attente du WAF
+      ansible.builtin.wait_for:
+        host: "{{ probe_base_url | urlsplit('hostname') }}"
+        port: 443
+        timeout: 300
+
+    - name: Vérification
+      ansible.builtin.include_tasks: tasks/verify.yml
+      vars:
+        verify_service: api
