@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { getAccounts, getTransactions } from './api.js'
+import History from './History.jsx'
+import Shop from './Shop.jsx'
 import TransferForm from './TransferForm.jsx'
 
 const money = (amount, currency) => `${Number(amount).toFixed(2)} ${currency}`
@@ -11,7 +13,7 @@ export default function Dashboard({ session, onExpired }) {
 
   const refresh = useCallback(async () => {
     try {
-      const [acc, tx] = await Promise.all([getAccounts(session.token), getTransactions(session.token)])
+      const [acc, tx] = await Promise.all([getAccounts(session.token), getTransactions(session.token, 50)])
       setAccounts(acc)
       setTransactions(tx)
       setError('')
@@ -52,24 +54,17 @@ export default function Dashboard({ session, onExpired }) {
         </ul>
       </section>
 
-      <TransferForm token={session.token} accounts={accounts} onExpired={onExpired} onDone={refresh} />
+      <Shop token={session.token} accounts={accounts} onExpired={onExpired} onDone={refresh} />
 
-      <section className="rounded bg-white p-4 shadow">
-        <h2 className="mb-3 font-semibold">Dernières transactions</h2>
-        <ul className="divide-y text-sm">
-          {transactions.map((t) => (
-            <li key={t.id} className="flex justify-between py-2">
-              <span>
-                {t.from_account} → {t.to_account}
-              </span>
-              <span>
-                {money(t.amount, t.currency)} <span className="ml-1 rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-800">{t.status}</span>
-              </span>
-            </li>
-          ))}
-          {transactions.length === 0 && <li className="py-2 text-slate-500">Aucune transaction.</li>}
-        </ul>
-      </section>
+      <History transactions={transactions} />
+
+      {/* Virement libre conservé : même endpoint que la boutique, utile aux tests et à la démo technique. */}
+      <details className="rounded bg-white p-4 shadow">
+        <summary className="cursor-pointer font-semibold">Virement libre</summary>
+        <div className="mt-3">
+          <TransferForm token={session.token} accounts={accounts} onExpired={onExpired} onDone={refresh} />
+        </div>
+      </details>
     </div>
   )
 }
