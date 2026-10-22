@@ -1,31 +1,21 @@
-"""Collecte les 4 variables du contrat depuis Prometheus vers un CSV."""
-import argparse
 import os
 import sys
+import argparse
 import time
 
-import pandas as pd
 import requests
+import pandas as pd
 
-PROM = os.environ.get("PROM_URL", "http://192.168.1.142:9090")
-STEP = "5s"
-FENETRE = "15s"   # doit contenir au moins 3 mesures (scrape_interval 5s)
+PROM = os.getenv("PROM_URL", "http://192.168.1.142:9090")
+STEP = 5
 
-# A ADAPTER quand le dev a confirme les noms (labels service/status, histogramme).
 REQUETES = {
-    "rps": f'sum(rate(http_requests_total{{service="api"}}[{FENETRE}]))',
-    "p95_ms": (
-        "1000 * histogram_quantile(0.95, sum by (le) "
-        f'(rate(http_request_duration_seconds_bucket{{service="api"}}[{FENETRE}])))'
-    ),
-    "err_5xx_ratio": (
-        f'(sum(rate(http_requests_total{{service="api",status=~"5.."}}[{FENETRE}])) or vector(0))'
-        f' / clamp_min(sum(rate(http_requests_total{{service="api"}}[{FENETRE}])), 0.001)'
-    ),
-    # Verifie : conteneur ra-api, en % d'un coeur.
-    "cpu_pct": f'100 * sum(rate(container_cpu_usage_seconds_total{{name="ra-api"}}[{FENETRE}]))',
+    "rps": 'sum(rate(nginx_http_requests_total{job="api-gateway"}[15s]))',
+    "p95_ms": 'max(max_over_time(probe_duration_seconds{service="api"}[15s])) * 1000',
+    "err_5xx_ratio": '1 - avg(avg_over_time(probe_success{service="api"}[15s]))',
+    "cpu_pct": '100 * sum(rate(container_cpu_usage_seconds_total{name="ra-api"}[1m]))',
 }
-ORDRE = ["rps", "p95_ms", "err_5xx_ratio", "cpu_pct"]
+COLONNES = ["rps", "p95_ms", "err_5xx_ratio", "cpu_pct"]
 
 
 def interroger(nom, requete, debut, fin):
@@ -37,27 +27,33 @@ def interroger(nom, requete, debut, fin):
     r.raise_for_status()
     resultat = r.json()["data"]["result"]
     if not resultat:
-        sys.exit(f"Aucune donnee pour '{nom}'. Verifie le nom des metriques / labels.")
+        print(f"Aucune donnee pour '{nom}'. Verifie le nom des metriques / labels.")
+        sys.exit(1)
     valeurs = resultat[0]["values"]
-    return pd.Series([float(v) for _, v in valeurs], index=[t for t, _ in valeurs])
+    return pd.Series(
+        [float(v[1]) for v in valeurs],
+        index=[float(v[0]) for v in valeurs],
+        name=nom,
+    )
 
 
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--minutes", type=int, default=60, help="duree a exporter")
-    p.add_argument("--out", default="data/normal.csv")
-    a = p.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--minutes", type=int, default=60)
+    parser.add_argument("--out", default="data/normal.csv")
+    args = parser.parse_args()
 
     fin = time.time()
-    debut = fin - a.minutes * 60
-    colonnes = {n: interroger(n, q, debut, fin) for n, q in REQUETES.items()}
+    debut = fin - args.minutes * 60
 
-    df = pd.DataFrame(colonnes)[ORDRE]
-    df = df.replace([float("inf"), float("-inf")], pd.NA).ffill().fillna(0)
+    series = [interroger(nom, q, debut, fin) for nom, q in REQUETES.items()]
+    df = pd.concat(series, axis=1)[COLONNES].dropna()
+    df["err_5xx_ratio"] = df["err_5xx_ratio"].clip(0, 1)
 
-    df.to_csv(a.out, index=False)
-    print(f"{len(df)} lignes ecrites dans {a.out}")
-    print(df.describe().round(3))
+    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+    df.to_csv(args.out, index=False)
+    print(f"{len(df)} lignes ecrites dans {args.out}")
+    print(df.describe())
 
 
 if __name__ == "__main__":

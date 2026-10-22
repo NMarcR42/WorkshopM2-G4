@@ -13,41 +13,57 @@ from fastapi import FastAPI
 from fastapi.responses import Response
 from prometheus_client import Gauge, generate_latest, CONTENT_TYPE_LATEST
 
-# ---------- Configuration (tout vient de variables d'environnement) ----------
+# ---------- Configuration (variables d'environnement) ----------
 MODEL_PATH = os.getenv("MODEL_PATH", "models/iforest.joblib")
+CALIBRATION_PATH = os.getenv("CALIBRATION_PATH", "models/calibration.json")
 PERIODE_S = int(os.getenv("PERIODE_S", "5"))
 FENETRES_REQUISES = int(os.getenv("FENETRES_REQUISES", "3"))
 FENETRE_S = int(os.getenv("FENETRE_S", "15"))
+SEUIL = float(os.getenv("SEUIL", "0.8"))
 TARGET_SERVICE = os.getenv("TARGET_SERVICE", "api")
-MODEL_VERSION = os.getenv("MODEL_VERSION", "iforest-v1")
+MODEL_VERSION = os.getenv("MODEL_VERSION", "iforest-enveloppe-v2")
 
-# Rien de secret dans le code : adresse et token viennent de l'environnement
+# Source des mesures : "prometheus" (reel) ou "fictif" (tests)
+SOURCE_MESURES = os.getenv("SOURCE_MESURES", "prometheus")
+PROM_URL = os.getenv("PROM_URL", "http://192.168.1.142:9090").rstrip("/")
+
+# Rien de secret dans le code
 REMEDIATION_URL = os.getenv("REMEDIATION_URL", "").rstrip("/")
 ENGINE_TOKEN = os.getenv("ENGINE_TOKEN", "")
 
 scaler, modele, colonnes = joblib.load(MODEL_PATH)
+with open(CALIBRATION_PATH) as f:
+    CALIB = json.load(f)
 
-# ---------- Métriques Prometheus ----------
+# Requetes Prometheus (memes que scripts/collect_dataset.py)
+REQUETES = {
+    "rps": 'sum(rate(nginx_http_requests_total{job="api-gateway"}[15s]))',
+    "p95_ms": 'max(max_over_time(probe_duration_seconds{service="api"}[15s])) * 1000',
+    "err_5xx_ratio": '1 - avg(avg_over_time(probe_success{service="api"}[15s]))',
+    "cpu_pct": '100 * sum(rate(container_cpu_usage_seconds_total{name="ra-api"}[1m]))',
+}
+
+# ---------- Metriques Prometheus ----------
 g_score = Gauge("ra_anomaly_score", "Score d'anomalie (0 a 1)", ["service"])
 g_flag = Gauge("ra_anomaly_flag", "1 si anomalie detectee", ["service"])
 g_consec = Gauge("ra_anomaly_consecutive_windows", "Fenetres anormales consecutives", ["service"])
 
-# ---------- Etat partagé ----------
+# ---------- Etat partage ----------
 etat = {
     "attaque_simulee": False,
     "score": 0.0,
     "flag": 0,
     "consecutive": 0,
     "features": {},
-    "anomaly_id": None,      # identifiant de l'incident en cours
-    "envoye": False,         # signal deja envoye pour cet incident ?
+    "anomaly_id": None,
+    "envoye": False,
     "dernier_envoi": "jamais",
+    "derniere_erreur": "aucune",
 }
 
 
-def mesures_fictives():
-    """TEMPORAIRE : a remplacer par la lecture de Prometheus."""
-    if etat["attaque_simulee"]:
+def mesures_fictives(attaque):
+    if attaque:
         return {
             "rps": max(0, np.random.normal(300, 50)),
             "p95_ms": max(0, np.random.normal(2300, 500)),
@@ -55,11 +71,64 @@ def mesures_fictives():
             "cpu_pct": min(100, max(0, np.random.normal(95, 5))),
         }
     return {
-        "rps": max(0, np.random.normal(20, 5)),
-        "p95_ms": max(0, np.random.normal(80, 20)),
-        "err_5xx_ratio": min(1, max(0, np.random.normal(0.005, 0.005))),
-        "cpu_pct": min(100, max(0, np.random.normal(30, 10))),
+        "rps": max(0, np.random.normal(5, 2)),
+        "p95_ms": max(0, np.random.normal(16, 4)),
+        "err_5xx_ratio": 0.0,
+        "cpu_pct": max(0, np.random.normal(0.3, 0.1)),
     }
+
+
+def mesures_reelles():
+    """Lit les 4 mesures dans Prometheus (une requete instantanee chacune)."""
+    resultat = {}
+    for nom, requete in REQUETES.items():
+        r = requests.get(
+            f"{PROM_URL}/api/v1/query",
+            params={"query": requete},
+            timeout=5,
+        )
+        r.raise_for_status()
+        data = r.json()["data"]["result"]
+        if not data:
+            raise ValueError(f"aucune donnee pour {nom}")
+        valeur = float(data[0]["value"][1])
+        if np.isnan(valeur):
+            raise ValueError(f"valeur NaN pour {nom}")
+        resultat[nom] = valeur
+    resultat["err_5xx_ratio"] = min(1.0, max(0.0, resultat["err_5xx_ratio"]))
+    return resultat
+
+
+def obtenir_mesures():
+    # La simulation d'attaque (tests) a toujours la priorite
+    if etat["attaque_simulee"]:
+        return mesures_fictives(True)
+    if SOURCE_MESURES == "prometheus":
+        return mesures_reelles()
+    return mesures_fictives(False)
+
+
+def calculer_score(m):
+    """Score final 0..1 = maximum de deux etages :
+    1) Isolation Forest (combinaisons inhabituelles de mesures)
+    2) Enveloppe de securite (valeur tres au-dela de la plage normale)
+    """
+    x = pd.DataFrame([[m[c] for c in colonnes]], columns=colonnes)
+    brut = float(np.clip(-modele.score_samples(scaler.transform(x))[0], 0, 1))
+    lo, hi = CALIB["lo"], CALIB["hi"]
+    if brut <= lo:
+        s_if = brut * 0.6 / lo
+    else:
+        s_if = 0.6 + 0.3 * (brut - lo) / (hi - lo)
+
+    s_env = 0.0
+    for c in colonnes:
+        e = CALIB["enveloppe"][c]
+        z = (m[c] - e["med"]) / e["spread"]
+        s_c = 0.5 * z if z <= 1 else 0.5 + 0.3 * (z - 1)
+        s_env = max(s_env, s_c)
+
+    return float(min(1.0, max(0.0, s_if, s_env)))
 
 
 def envoyer_anomalie():
@@ -78,7 +147,7 @@ def envoyer_anomalie():
         "target_service": TARGET_SERVICE,
         "window_s": FENETRE_S,
         "features": {k: round(float(v), 4) for k, v in etat["features"].items()},
-        "suspects": [],  # a remplir plus tard (viendra de Loki, pas du ML)
+        "suspects": [],
     }
     try:
         r = requests.post(
@@ -97,18 +166,16 @@ def envoyer_anomalie():
 def boucle():
     while True:
         try:
-            m = mesures_fictives()
+            m = obtenir_mesures()
+            etat["derniere_erreur"] = "aucune"
             etat["features"] = m
-            x = pd.DataFrame([[m[c] for c in colonnes]], columns=colonnes)
-            xs = scaler.transform(x)
-            score = float(min(1.0, max(0.0, -modele.score_samples(xs)[0])))
-            flag = 1 if modele.predict(xs)[0] == -1 else 0
+            score = calculer_score(m)
+            flag = 1 if score >= SEUIL else 0
 
             if flag:
                 etat["consecutive"] += 1
             else:
                 etat["consecutive"] = 0
-                # fin d'incident : on prepare le prochain
                 etat["anomaly_id"] = None
                 etat["envoye"] = False
 
@@ -119,13 +186,13 @@ def boucle():
             g_flag.labels(TARGET_SERVICE).set(flag)
             g_consec.labels(TARGET_SERVICE).set(etat["consecutive"])
 
-            # Signal : 3 fenetres de suite, une seule fois par incident
             if etat["consecutive"] >= FENETRES_REQUISES and not etat["envoye"]:
                 if etat["anomaly_id"] is None:
                     etat["anomaly_id"] = str(uuid.uuid4())
                 if envoyer_anomalie():
-                    etat["envoye"] = True  # sinon on reessaie au prochain tour
+                    etat["envoye"] = True
         except Exception as e:
+            etat["derniere_erreur"] = f"{type(e).__name__}: {e}"
             print("Erreur dans la boucle :", e)
         time.sleep(PERIODE_S)
 
@@ -149,6 +216,8 @@ def health():
 def status():
     return {
         "service": TARGET_SERVICE,
+        "source_mesures": SOURCE_MESURES,
+        "seuil": SEUIL,
         "attaque_simulee": etat["attaque_simulee"],
         "anomaly_score": round(etat["score"], 3),
         "anomaly_flag": etat["flag"],
@@ -156,6 +225,8 @@ def status():
         "signal_a_envoyer": etat["consecutive"] >= FENETRES_REQUISES,
         "signal_envoye": etat["envoye"],
         "dernier_envoi": etat["dernier_envoi"],
+        "derniere_erreur": etat["derniere_erreur"],
+        "features": {k: round(float(v), 3) for k, v in etat["features"].items()},
     }
 
 
