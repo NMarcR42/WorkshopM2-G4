@@ -20,3 +20,8 @@ ia/detector/data/raw/
 
 .pytest_cache/
 __pycache__/
+
+ia/data/
+ia/test_cam*.jpg
+ia/test_cam.py
+esp8266-led/include/secrets.h
