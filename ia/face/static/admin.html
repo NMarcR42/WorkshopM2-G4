@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Habilitations</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;padding:24px}
+.carte{background:#1e293b;border-radius:12px;padding:20px;max-width:900px;margin:0 auto 16px}
+input,select{padding:7px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;margin:3px}
+button{padding:7px 11px;border:0;border-radius:6px;background:#2563eb;color:#fff;cursor:pointer;margin:2px}
+button.r{background:#b91c1c}button.g{background:#475569}
+table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #334155;padding:6px;text-align:left;font-size:.9rem}
+#msg{min-height:1.4em}.ok{color:#4ade80}.ko{color:#f87171}
+</style></head><body>
+<div class="carte"><h1>Habilitations (back-office)</h1>
+<input id="tok" type="password" placeholder="Jeton administrateur"><button onclick="charger()">Charger</button>
+<div id="msg"></div></div>
+<div class="carte"><h2>Nouvel utilisateur</h2>
+<input id="nu" placeholder="identifiant"><input id="np" type="password" placeholder="mot de passe (8+)">
+<select id="nr"><option>operateur</option><option>admin</option></select>
+<button onclick="creer()">Creer</button></div>
+<div class="carte"><h2>Utilisateurs</h2>
+<table><thead><tr><th>Identifiant</th><th>Role</th><th>Actif</th><th>Visages</th><th>Blocage</th><th>Actions</th></tr></thead>
+<tbody id="liste"></tbody></table></div>
+<div class="carte"><h2>Journal (100 derniers evenements)</h2><pre id="journal" style="white-space:pre-wrap;font-size:.8rem"></pre></div>
+<script>
+const $=id=>document.getElementById(id);
+function dire(t,c){$('msg').textContent=t;$('msg').className=c||'';}
+async function api(m,url,corps){
+ const r=await fetch(url,{method:m,headers:{'Content-Type':'application/json','X-Admin-Token':$('tok').value},body:corps?JSON.stringify(corps):undefined});
+ const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||'erreur '+r.status);return d;}
+async function charger(){
+ try{const us=await api('GET','/admin/users');
+  $('liste').innerHTML=us.map(u=>`<tr><td>${u.user}</td><td>${u.role}</td><td>${u.actif?'oui':'non'}</td><td>${u.visages}</td><td>${u.bloque_s?u.bloque_s+' s':'-'}</td><td>
+   <button onclick="visage('${u.user}')">Enregistrer visage</button>
+   <button class="g" onclick="bascule('${u.user}',${!u.actif})">${u.actif?'Desactiver':'Activer'}</button>
+   <button class="g" onclick="debloquer('${u.user}')">Debloquer</button>
+   <button class="r" onclick="supprimer('${u.user}')">Supprimer</button></td></tr>`).join('');
+  const j=await api('GET','/admin/journal');
+  $('journal').textContent=j.slice().reverse().map(e=>new Date(e.t*1000).toLocaleTimeString()+'  '+e.evenement+'  '+e.user+'  '+e.detail).join('\n');
+  dire('');}catch(e){dire(e.message,'ko');}}
+async function creer(){try{await api('POST','/admin/users',{user:$('nu').value,password:$('np').value,role:$('nr').value});dire('Utilisateur cree','ok');charger();}catch(e){dire(e.message,'ko');}}
+async function visage(u){dire('Placez la personne devant la camera du PC hote (quelques secondes)...');
+ try{await api('POST','/admin/users/'+u+'/face');dire('Visage enregistre','ok');charger();}catch(e){dire(e.message,'ko');}}
+async function bascule(u,a){try{await api('PATCH','/admin/users/'+u,{actif:a});charger();}catch(e){dire(e.message,'ko');}}
+async function debloquer(u){try{await api('POST','/admin/users/'+u+'/unblock');charger();}catch(e){dire(e.message,'ko');}}
+async function supprimer(u){if(!confirm('Supprimer '+u+' ?'))return;try{await api('DELETE','/admin/users/'+u);charger();}catch(e){dire(e.message,'ko');}}
+</script></body></html>

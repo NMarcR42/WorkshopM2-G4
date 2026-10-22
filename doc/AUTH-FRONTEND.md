@@ -97,6 +97,17 @@ Côté logs : `./scripts/compose.sh logs auth` montre `login_ok` / `login_failed
 - Vite change de port sans prévenir si 5173 est pris : lire l'URL affichée.
 - Après `docker stop` puis `start` de la base, attendre qu'elle soit « healthy » (`./scripts/compose.sh ps`).
 
+## Login en 3 étapes (identifiant → visage → mot de passe)
+
+Côté front : `Login.jsx`, `FaceStep.jsx`, `api.js`. Côté IA : serveur `ia/face/` sur le PC hôte (lancement et contrat complet : [`ia/README-face.md`](../ia/README-face.md)). Le serveur lit lui-même la caméra USB : le front n'envoie aucune image, il appelle `POST /auth/identify {user}` et attend le verdict.
+
+Le mode se fixe à la construction par `VITE_FACE_MODE` : `mock` (défaut, simulation affichée à l'écran), `api` (serveur IA réel), `off` (étape sautée). Adresse du serveur : `VITE_FACE_BASE` (défaut `/face`, à router vers `hôte:8600` en retirant le préfixe ; en dev, proxy Vite vers `DEV_FACE_URL`, défaut `http://localhost:8600`). Sans proxy : mettre l'URL complète et déclarer l'origine du front dans `CORS_ORIGINS` côté IA.
+
+- **Mot de passe** : vérifié par `auth` (`/auth/login`, le JWT sert à l'API). Le `token` visage est envoyé en `X-Face-Token`.
+- **Plan B** : panne (caméra introuvable 503, serveur IA injoignable) → bascule automatique au mot de passe seul, avec avertissement. Visage refusé / compte bloqué (429) → pas de bascule automatique, message du serveur ; bouton manuel « continuer avec le mot de passe seul ». Plan B global le jour J : reconstruire avec `VITE_FACE_MODE=off`.
+- **Contrôle côté serveur (`FACE_ENFORCE`)** : `false` par défaut, `auth` ignore le visage (comportement historique, aucun service IA requis). `true` : `/auth/login` exige `X-Face-Token`, le valide auprès de l'IA par `POST {FACE_SERVICE_URL}/auth/confirm` (clé de service = secret `face_service_key`, à copier dans `SERVICE_KEY` côté IA ; usage unique, lié à l'utilisateur) et ne délivre le JWT qu'ensuite. Refus : 403 token absent/expiré, 503 IA injoignable (fail closed, pas de plantage). Le compte technique `canary` est exempté. Cela pilote aussi les LED (vert/rouge selon le mot de passe). En `true`, le plan B « mot de passe seul » est refusé : pour l'activer le jour J, repasser `FACE_ENFORCE=false`.
+- **À faire** : route `/face/` au WAF ; `./scripts/init-local.sh` à relancer sur les clones existants (nouveau secret `face_service_key`, et à ajouter à SOPS).
+
 ## Ce qui reste à faire
 
 | À faire | Qui | Détail |

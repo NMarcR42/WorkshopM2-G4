@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Connexion back-office</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;justify-content:center;padding:24px}
+.carte{background:#1e293b;border-radius:12px;padding:24px;max-width:420px;width:100%}
+h1{font-size:1.2rem;margin-top:0} label{display:block;margin:12px 0 4px}
+input{width:100%;padding:8px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;box-sizing:border-box}
+button{margin-top:12px;padding:10px 14px;border:0;border-radius:6px;background:#2563eb;color:#fff;cursor:pointer}
+#msg{margin-top:14px;min-height:1.4em}.ok{color:#4ade80}.ko{color:#f87171}.cache{display:none}
+</style></head><body><div class="carte">
+<h1>Connexion back-office</h1>
+
+<div id="e1"><label>Identifiant</label><input id="user" autocomplete="username">
+<button id="b1" onclick="identifier()">Continuer</button></div>
+
+<div id="e2" class="cache"><p>Regardez la camera du poste, un seul visage visible...</p></div>
+
+<div id="e3" class="cache"><label>Mot de passe</label>
+<input id="pwd" type="password" autocomplete="current-password">
+<button onclick="connecter()">Se connecter</button></div>
+
+<div id="msg"></div>
+<script>
+const $=id=>document.getElementById(id);
+let jeton=null, minuteur=null;
+function dire(t,c){$('msg').textContent=t;$('msg').className=c||'';}
+function etape(n){['e1','e2','e3'].forEach((e,i)=>$(e).classList.toggle('cache',i+1!==n));}
+function remiseAZero(){jeton=null;$('user').value='';$('pwd').value='';etape(1);}
+function attendre(s,texte){
+ clearInterval(minuteur);$('b1').disabled=true;$('user').disabled=true;
+ let reste=s;
+ minuteur=setInterval(()=>{reste--;dire(texte+' ('+reste+' s)','ko');
+  if(reste<=0){clearInterval(minuteur);$('b1').disabled=false;$('user').disabled=false;dire('Vous pouvez ressaisir votre identifiant.');}},1000);
+ dire(texte+' ('+reste+' s)','ko');}
+async function post(url,corps){
+ const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(corps)});
+ const d=await r.json().catch(()=>({}));return {r,d};}
+async function identifier(){
+ const u=$('user').value.trim();if(!u){dire('Saisissez un identifiant','ko');return;}
+ etape(2);dire('Camera allumee, analyse du visage...');
+ try{
+  const {r,d}=await post('/auth/identify',{user:u});
+  if(r.status===429||r.status===409){etape(1);$('user').value='';attendre(d.retry_after||30,d.detail);return;}
+  if(!r.ok){etape(1);dire(d.detail||'erreur '+r.status,'ko');return;}
+  if(d.ok){jeton=d.token;etape(3);dire('Visage reconnu. Entrez votre mot de passe.','ok');$('pwd').focus();}
+  else{etape(1);$('user').value='';attendre(d.pause_s||30,d.message||'Visage non reconnu');}
+ }catch(e){etape(1);dire('Serveur injoignable','ko');}}
+async function connecter(){
+ const {r,d}=await post('/auth/password',{user:$('user').value,password:$('pwd').value,token:jeton});
+ if(d.ok){etape(0);dire('Connexion reussie. Ouverture du back-office...','ok');
+  try{sessionStorage.setItem('session',d.session);}catch(e){}
+  setTimeout(()=>{window.location.href='/backoffice';},800);}
+ else{remiseAZero();dire(d.detail||'Echec, recommencez l\'identification','ko');}}
+</script></div></body></html>

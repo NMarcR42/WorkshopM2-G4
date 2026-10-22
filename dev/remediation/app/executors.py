@@ -33,7 +33,7 @@ class AnsibleExecutor:
         if not (Path(self.s.ansible_workdir) / self.s.ansible_playbooks_subdir / "unblock_ip.yml").is_file():
             raise ActionError("unblock_ip.yml absent : déblocage à faire côté WAF (ban expiré ou ra-remediate unblock-ip)")
         for ip in ips:
-            self._playbook("unblock_ip", {"ip": ip})
+            self._playbook("unblock_ip", {"ip": ip}, require_marker=False)
         return {"changed": True, "ips": ips}
 
     @staticmethod
@@ -44,7 +44,7 @@ class AnsibleExecutor:
             return {"service": params["service"]}
         return {}  # restore_db, rollback_vm : cible fixée par le playbook
 
-    def _playbook(self, action: str, extra: dict) -> dict:
+    def _playbook(self, action: str, extra: dict, require_marker: bool = True) -> dict:
         cmd = ["ansible-playbook"]
         if self.s.ansible_inventory:
             cmd += ["-i", self.s.ansible_inventory]
@@ -53,13 +53,15 @@ class AnsibleExecutor:
             cmd += ["-e", f"{k}={v}"]
         try:
             r = subprocess.run(cmd, cwd=self.s.ansible_workdir, capture_output=True, text=True, check=False,
+                               encoding="utf-8", errors="replace",  # « É » : ne dépend pas de la locale du conteneur
                                timeout=self.s.ansible_timeout_s)
         except (subprocess.TimeoutExpired, OSError) as exc:
             raise ActionError(f"ansible-playbook: {type(exc).__name__}") from exc
         # Le code retour seul ne suffit pas : le playbook doit aussi annoncer que le service est rétabli.
         if r.returncode != 0:
             raise ActionError(f"ansible-playbook code {r.returncode}: {(r.stdout + r.stderr)[-300:]}")
-        if self.s.ansible_success_marker not in r.stdout:
+        # unblock_ip.yml ne rejoue pas de transaction : on ne rétablit rien, le code retour suffit.
+        if require_marker and self.s.ansible_success_marker not in r.stdout:
             raise ActionError(f"playbook terminé sans « {self.s.ansible_success_marker} »: {r.stdout[-300:]}")
         lines = r.stdout.strip().splitlines()
         return {"changed": True, "rc": r.returncode, "resume": lines[-1][:200] if lines else ""}

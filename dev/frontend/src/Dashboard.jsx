@@ -33,6 +33,12 @@ export default function Dashboard({ session, onExpired }) {
         </p>
       )}
 
+      <section className="rounded-lg bg-slate-800 p-5 text-white shadow">
+        <p className="text-sm text-slate-300">Solde total</p>
+        <p className="text-3xl font-semibold">{money(accounts.reduce((s, a) => s + Number(a.balance), 0), 'EUR')}</p>
+        <p className="mt-1 text-xs text-slate-400">{accounts.length} compte(s)</p>
+      </section>
+
       <section className="rounded bg-white p-4 shadow">
         <h2 className="mb-3 font-semibold">Mes comptes</h2>
         <ul className="divide-y">
@@ -57,7 +63,7 @@ export default function Dashboard({ session, onExpired }) {
                 {t.from_account} → {t.to_account}
               </span>
               <span>
-                {money(t.amount, t.currency)} <span className="text-green-700">{t.status}</span>
+                {money(t.amount, t.currency)} <span className="ml-1 rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-800">{t.status}</span>
               </span>
             </li>
           ))}

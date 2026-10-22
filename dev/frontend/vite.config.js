@@ -10,6 +10,8 @@ export default defineConfig(({ mode }) => {
   const api = env.DEV_API_URL || 'http://localhost:8000'
   const auth = env.DEV_AUTH_URL || 'http://localhost:8001'
 
+  const face = env.DEV_FACE_URL || 'http://localhost:8600' // serveur de reconnaissance faciale (PC hôte)
+
   // xfwd : pose X-Forwarded-For, comme le WAF, pour que l'API journalise l'IP du client.
   const route = (prefix, target) => ({
     target,
@@ -22,7 +24,7 @@ export default defineConfig(({ mode }) => {
     plugins: [react(), tailwindcss()],
     server: {
       port: 5173,
-      proxy: { '/api': route('/api', api), '/auth': route('/auth', auth) },
+      proxy: { '/api': route('/api', api), '/auth': route('/auth', auth), '/face': route('/face', face) },
     },
   }
 })

@@ -210,7 +210,7 @@ def ask(q: Question):
         texte = re.sub(r"(?im)^\s*\d+\.\s*ex[eé]cuter\b.*$\n?", "", texte)
         if actions_dans_contexte:
             texte += NOTE_REMEDIATION
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - toute panne du LLM doit devenir un 503 propre
         raise HTTPException(status_code=503, detail=f"Assistant indisponible : {e}")
     return {
         "answer": texte,

@@ -1,0 +1,10 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Back-office</title>
+<style>body{font-family:system-ui;background:#0f172a;color:#e2e8f0;padding:24px}</style></head><body>
+<h1>Back-office (page de demonstration)</h1><p id="p">Verification de la session...</p>
+<p><a style="color:#93c5fd" href="/admin">Gestion des habilitations</a></p>
+<script>
+(async()=>{let s='';try{s=sessionStorage.getItem('session')||'';}catch(e){}
+const r=await fetch('/auth/me',{headers:{Authorization:'Bearer '+s}});
+if(!r.ok){location.href='/';return;}
+const d=await r.json();document.getElementById('p').textContent='Connecte : '+d.user+' (role '+d.role+')';})();
+</script></body></html>
