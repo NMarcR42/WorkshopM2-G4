@@ -1,6 +1,6 @@
 # dev
 
-Services métier et moteur de reprise : `api`, `auth`, `canary`, `remediation`, `frontend`. Rôle de chacun : [Services](../doc/ARCHITECTURE.md#services). Avancement : [roadmap](../doc/ROADMAP.md).
+Services métier et moteur de reprise : `api`, `auth`, `frontend`, `canary`, `remediation`, `supervision`. Rôle de chacun : [Services](../doc/ARCHITECTURE.md#services). Avancement : [roadmap](../doc/ROADMAP.md).
 
 ## Conventions des services Python
 
@@ -17,14 +17,23 @@ Services métier et moteur de reprise : `api`, `auth`, `canary`, `remediation`, 
 
 Émet les JWT lus par `api` (`POST /login` → `{access_token, expires_in, username, role}`). Pas de base d'utilisateurs : comptes de démo dans `auth/app/users.json` (hash PBKDF2, `tools/hash_password.py` pour en créer). Mots de passe **fictifs**, en clair ici : `alice / alice-demo`, `bob / bob-demo` (clients), `ops / ops-demo` (operator). Le compte `canary` n'existe que si `CANARY_PASSWORD_FILE` est fourni (secret `canary_password`). Les échecs de login sont journalisés (`event: login_failed`) pour le SIEM.
 
+**Contrôle facial (`FACE_ENFORCE`)** : `false` par défaut, `auth` se comporte comme avant. À `true`, `POST /login` exige l'en-tête `X-Face-Token` (renvoyé par le serveur de reconnaissance, voir [`ia/README-face.md`](../ia/README-face.md)) et le valide auprès de ce serveur (`POST {FACE_SERVICE_URL}/auth/confirm`, clé de service = secret `face_service_key`). Token absent ou refusé : 403 ; serveur de reconnaissance injoignable : 503 propre, sans JWT (refus par défaut). Le compte technique `canary` est exempté. Détail et test : [`doc/AUTH-FRONTEND.md`](../doc/AUTH-FRONTEND.md).
+
 ## frontend
 
-Application React + Tailwind (Vite) **sobre** : login → comptes → paiement → résultat. La vue du jury est un autre service : [`supervision`](#supervision).
+Application React + Tailwind (Vite), sobre. Parcours : **login en 3 étapes** (identifiant → reconnaissance faciale → mot de passe) → tableau de bord (solde total, comptes) → **boutique** (4 articles fictifs, « Payer ») → **historique des transactions** (date, libellé, montant, statut) ; un « virement libre » reste disponible. La vue du jury est un autre service : [`supervision`](#supervision).
 
-- Appelle `/api/…` et `/auth/…` sur la même origine, donc **toujours via le WAF** ([routage](../doc/ARCHITECTURE.md#routage-de-lentrée-waf)) ; préfixes réglables à la construction par `VITE_API_BASE` / `VITE_AUTH_BASE`.
-- Délai de 8 s par requête, échec affiché clairement, `Idempotency-Key` conservée tant que la réponse est incertaine : on peut réessayer sans payer deux fois.
-- Ne parle ni à `remediation`, ni au `detector`, ni à l'`assistant`.
+- **Login et plan B** : `VITE_FACE_MODE` = `mock` (simulation, défaut), `api` (serveur de reconnaissance réel, `VITE_FACE_BASE`, défaut `/face`) ou `off` (étape sautée). Une panne du serveur facial (caméra introuvable, service injoignable) bascule automatiquement sur le mot de passe seul ; un visage refusé ou un compte bloqué n'ouvre pas le plan B tout seul. Avec `FACE_ENFORCE=true` côté `auth`, le plan B est refusé : repasser `FACE_ENFORCE=false`.
+- **Boutique** : chaque paiement utilise l'endpoint existant `POST /v1/transactions` vers `VITE_MERCHANT_ACCOUNT` (défaut `ACC-MERCHANT`), avec le prix de l'article. L'API n'a pas de champ libellé : le nom de l'article est gardé dans le navigateur (`localStorage`) pour l'historique ; sans lui, l'historique affiche « Virement A → B ».
+- Aucun identifiant de démo n'est affiché à l'écran.
+- Appelle `/api/…`, `/auth/…` et `/face/…` sur la même origine, donc **toujours via le WAF** et le gateway ; préfixes réglables à la construction par `VITE_API_BASE`, `VITE_AUTH_BASE` et `VITE_FACE_BASE`. La route `/face/` vers le serveur de reconnaissance est à déclarer côté WAF/gateway.
+- Délai de 8 s par requête (20 s pour la reconnaissance faciale, la caméra reste allumée quelques secondes), échec affiché clairement, `Idempotency-Key` conservée tant que la réponse est incertaine : on peut réessayer sans payer deux fois.
+- Ne parle ni à `remediation`, ni au `detector`, ni à l'`assistant` ; seul service IA joint : le serveur de reconnaissance faciale.
 - Pas de `/metrics` : l'observabilité métier est côté API.
+
+## supervision
+
+Vue du jury, en lecture seule : agrège l'état du paiement (`canary`), les incidents (`remediation`) et l'historique (Prometheus). Service FastAPI qui sert aussi le site compilé (`ui/`, React + Tailwind). Routes : `GET /api/status`, `/api/alerts`, `/api/remediation-log`, `/api/history`, `/health`, `/metrics`. Il n'expose que des `GET` et n'appelle jamais une route qui agit ; le navigateur ne parle qu'à lui, les adresses et tokens des services de contrôle restent côté serveur.
 
 ## canary
 
